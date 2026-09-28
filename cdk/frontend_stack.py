@@ -41,10 +41,17 @@ class FrontendStack(Stack):
             os.path.dirname(__file__), "..", "frontend", "dist"
         )
 
+        # prune=False is required: this bucket is shared with the food images
+        # deployed by BackendStack under the `images/` prefix. With CDK's default
+        # prune=True, this deployment would delete every object not present in
+        # frontend/dist — wiping those images on every frontend deploy.
+        # Vite emits content-hashed asset filenames, so leftover old assets are
+        # harmless; index.html and runtime-config.json are overwritten each time.
         s3deploy.BucketDeployment(
             self, "DeployFrontend",
             sources=[s3deploy.Source.asset(frontend_dist_path)],
             destination_bucket=hosting_bucket,
             distribution=distribution,
             distribution_paths=["/*"],
+            prune=False,
         )

@@ -227,14 +227,23 @@ class BackendStack(Stack):
             security_headers_behavior=cloudfront.ResponseSecurityHeadersBehavior(
                 content_security_policy=cloudfront.ResponseHeadersContentSecurityPolicy(
                     # Allow scripts/styles from self and inline (needed for Vite builds).
-                    # connect-src allows Cognito and AgentCore WebSocket endpoints.
+                    #
+                    # connect-src lists every AWS endpoint the browser talks to directly.
+                    # CSP only permits a wildcard as the LEFTMOST label of a host
+                    # (`*.example.com`). A wildcard in the middle (`cognito-idp.*.amazonaws.com`)
+                    # is an invalid source that browsers ignore, which silently blocks the
+                    # request, so the hosts are pinned to the stack's region:
+                    #   cognito-idp        – Amplify sign-in and token refresh
+                    #   bedrock-agentcore  – voice agent WebSocket
                     content_security_policy=(
                         "default-src 'self'; "
                         "script-src 'self'; "
                         "style-src 'self' 'unsafe-inline'; "
                         "img-src 'self' data:; "
                         "font-src 'self'; "
-                        "connect-src 'self' https://cognito-idp.*.amazonaws.com https://*.auth.*.amazoncognito.com wss://bedrock-agentcore.*.amazonaws.com; "
+                        "connect-src 'self' "
+                        f"https://cognito-idp.{self.region}.amazonaws.com "
+                        f"wss://bedrock-agentcore.{self.region}.amazonaws.com; "
                         "media-src 'self' blob:; "
                         "frame-ancestors 'none'; "
                         "base-uri 'self'; "
