@@ -341,8 +341,8 @@ class BackendStack(Stack):
             effect=iam.Effect.ALLOW,
             actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
             resources=[
-                f"arn:aws:bedrock:us-east-1:{self.account}:inference-profile/us.amazon.nova-sonic-v1:0",
-                "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-sonic-v1:0",
+                f"arn:aws:bedrock:us-east-1:{self.account}:inference-profile/us.amazon.nova-2-sonic-v1:0",
+                "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-2-sonic-v1:0",
             ],
         ))
         self.orders_table.grant_read_write_data(self.agent_runtime)
