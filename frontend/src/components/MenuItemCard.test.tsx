@@ -11,7 +11,7 @@ const sampleItem: MenuItem = {
   categoryId: 'cat-1',
   name: 'Classic Burger',
   description: 'A juicy beef patty with lettuce and tomato',
-  price: 899,
+  price: 2900,
   imageUrl: 'https://cdn.example.com/burger.jpg',
   category: 'Burgers',
   featured: false,
@@ -24,7 +24,7 @@ describe('MenuItemCard', () => {
 
     expect(screen.getByText('Classic Burger')).toBeInTheDocument();
     expect(screen.getByText('A juicy beef patty with lettuce and tomato')).toBeInTheDocument();
-    expect(screen.getByText('$8.99')).toBeInTheDocument();
+    expect(screen.getByText('AED 29.00')).toBeInTheDocument();
   });
 
   it('renders an image with alt text and correct src', () => {

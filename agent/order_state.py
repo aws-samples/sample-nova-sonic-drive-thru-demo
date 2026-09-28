@@ -42,7 +42,7 @@ class OrderLineItem:
     item_id: str
     name: str
     quantity: int
-    unit_price: int  # cents
+    unit_price: int  # fils (1/100 AED)
     special_instructions: str = ""
 
 
@@ -50,7 +50,7 @@ class OrderLineItem:
 class OrderState:
     """Manages in-memory order state during a voice session.
 
-    All prices are in cents (integers) to avoid floating-point issues.
+    All prices are in fils (integers, 100 fils = 1 AED) to avoid floating-point issues.
     """
 
     items: dict[str, OrderLineItem] = field(default_factory=dict)
@@ -102,7 +102,7 @@ class OrderState:
         self.items.clear()
 
     def get_total(self) -> int:
-        """Return the total price in cents."""
+        """Return the total price in fils."""
         return sum(item.quantity * item.unit_price for item in self.items.values())
 
     def is_empty(self) -> bool:

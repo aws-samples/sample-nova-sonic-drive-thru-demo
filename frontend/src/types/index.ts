@@ -14,7 +14,7 @@ export interface MenuItem {
   categoryId: string;
   name: string;
   description: string;
-  price: number; // cents
+  price: number; // fils (1/100 AED)
   imageUrl: string;
   category: string;
   featured: boolean;
@@ -25,7 +25,7 @@ export interface OrderItem {
   itemId: string;
   name: string;
   quantity: number;
-  unitPrice: number; // cents
+  unitPrice: number; // fils (1/100 AED)
   specialInstructions?: string;
 }
 
@@ -35,7 +35,7 @@ export interface BurgerBuilderState {
   patty: string | null;
   toppings: string[];
   sauces: string[];
-  price: number; // cents — running total
+  price: number; // fils — running total
 }
 
 export interface AgentUIState {

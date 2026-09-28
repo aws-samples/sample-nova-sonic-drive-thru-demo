@@ -31,7 +31,7 @@ Incremental implementation of a drive-thru voice ordering system with a React/Ty
 - [x] 3. Implement Python agent data models and order state
   - [x] 3.1 Create `OrderState` and `OrderLineItem` dataclasses and order state management logic
     - Implement in-memory order state with add, remove, cancel, summary, and place operations
-    - Compute totals as sum of quantity × unit_price in cents
+    - Compute totals as sum of quantity × unit_price in fils
     - _Requirements: 3.2, 3.3, 3.5, 3.6, 4.2, 4.3, 4.4, 6.1_
 
   - [x] 3.2 Write property test: add_to_order correctly updates order state

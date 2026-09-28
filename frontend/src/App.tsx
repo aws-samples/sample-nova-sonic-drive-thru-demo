@@ -9,6 +9,10 @@ import { useAppStore } from './store';
 import { createWebSocketClient, VoiceSessionManager } from './voice';
 import { getRuntimeConfig } from './config';
 import type { MenuItem } from './types';
+import { formatPrice } from './utils/formatPrice';
+
+// Build-your-own base price in fils (100 fils = 1 AED); mirrors agent/order_tools.py.
+const CUSTOM_BURGER_BASE_PRICE = 3300;
 
 export default function App() {
   const { signOut } = useAuthenticator();
@@ -134,7 +138,7 @@ export default function App() {
             onClick={() => {
               useAppStore.getState().applyAgentUIState({
                 ...useAppStore.getState().agentUI,
-                burgerBuilder: { active: true, patty: null, toppings: [], sauces: [], price: 899 },
+                burgerBuilder: { active: true, patty: null, toppings: [], sauces: [], price: CUSTOM_BURGER_BASE_PRICE },
               });
             }}
             role="button"
@@ -153,7 +157,7 @@ export default function App() {
             onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.boxShadow = 'none'; }}
           >
             <div style={{ fontWeight: 600, fontSize: '0.9em', color: '#333' }}>or Build Your Own Burger</div>
-            <div style={{ marginTop: 6, fontSize: '0.75em', color: '#27ae60', fontWeight: 600 }}>From $8.99</div>
+            <div style={{ marginTop: 6, fontSize: '0.75em', color: '#27ae60', fontWeight: 600 }}>From {formatPrice(CUSTOM_BURGER_BASE_PRICE)}</div>
           </div>
         </div>
         )}

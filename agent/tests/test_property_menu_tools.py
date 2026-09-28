@@ -41,7 +41,7 @@ names = st.text(min_size=1, max_size=40)
 # Descriptions
 descriptions = st.text(min_size=0, max_size=100)
 
-# Prices in cents
+# Prices in fils
 prices = st.integers(min_value=1, max_value=100_000)
 
 # Image URLs

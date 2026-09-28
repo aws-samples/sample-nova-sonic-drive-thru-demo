@@ -55,8 +55,9 @@ describe('Property 2: Menu item rendering includes all required information', ()
         // Description is rendered
         expect(screen.getByText(item.description)).toBeDefined();
 
-        // Formatted price is rendered
-        const priceText = formatPrice(item.price);
+        // Formatted price is rendered. formatPrice uses a non-breaking space, which
+        // testing-library's default normalizer collapses to a plain space in DOM text.
+        const priceText = formatPrice(item.price).replace(/\s+/g, ' ');
         expect(screen.getByText(priceText)).toBeDefined();
 
         // Image element with correct src and alt

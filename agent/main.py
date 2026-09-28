@@ -108,16 +108,16 @@ def update_ui(
 
     Args:
         categories: List of menu categories. Each: {"categoryId": "burgers", "name": "Burgers", "sortOrder": 1}
-        menu_items: Dict of categoryId to list of items. Each item: {"itemId": "...", "name": "...", "description": "...", "price": 799, "imageUrl": "...", "category": "...", "featured": true, "sortOrder": 1}
+        menu_items: Dict of categoryId to list of items. Each item: {"itemId": "...", "name": "...", "description": "...", "price": 2900, "imageUrl": "...", "category": "...", "featured": true, "sortOrder": 1}
     Args:
         highlighted_category: Category ID to highlight/scroll to (e.g. "burgers"). Set to "" to clear.
         highlighted_item: Item ID to highlight and show details for (e.g. "classic-burger"). Set to "" to clear.
         order_items: Full list of items in the order. Each item:
-            {"itemId": "...", "name": "...", "quantity": 1, "unitPrice": 799, "specialInstructions": "..."}
-        order_total: Total price in cents.
+            {"itemId": "...", "name": "...", "quantity": 1, "unitPrice": 2900, "specialInstructions": "..."}
+        order_total: Total price in fils (100 fils = 1 AED).
         order_confirmed: Set to true when order is placed.
         order_number: The order number (set when order is confirmed).
-        burger_builder: Show/update the burger builder UI. Set to {"active": true, "patty": null, "toppings": [], "sauces": [], "price": 899} to show progress. Set to {"active": false} to close it.
+        burger_builder: Show/update the burger builder UI. Set to {"active": true, "patty": null, "toppings": [], "sauces": [], "price": 3300} to show progress. Set to {"active": false} to close it.
 
     Returns:
         Confirmation that the update was sent.
@@ -174,7 +174,8 @@ FIRST ACTION: Call load_menu before anything else to populate the screen.
 GREETING: After load_menu, say "Welcome to our drive-thru! How can I help you?"
 
 RULES:
-- Format prices as dollars ($7.99)
+- All prices are in UAE dirhams (AED). Prices and totals in tool results and update_ui are integers in fils (100 fils = 1 dirham), so 2900 means 29 dirhams.
+- Say prices in dirhams, e.g. "twenty-nine dirhams". Never say "dollars", and never read out the letters "AED".
 - Never mention the screen/UI in speech
 - Never fabricate items — only use menu above
 - When DESCRIBING an item or customer asks about it: call update_ui(highlighted_item="<exact itemId>") to show details
@@ -186,8 +187,8 @@ RULES:
 TOOLS: load_menu, get_categories, get_items_by_category, get_recommendations, add_to_order, build_custom_burger, remove_from_order, get_order_summary, place_order, cancel_order, update_ui, get_ui_context
 
 BUILD YOUR OWN BURGER (itemId: custom-burger):
-Walk customer through: patty (beef/chicken), toppings, sauces. Use update_ui(burger_builder={"active":true,"patty":null,"toppings":[],"sauces":[],"price":899}) to open the builder. Update it as they choose (e.g. burger_builder={"active":true,"patty":"beef patty","toppings":["bacon"],"sauces":[],"price":1049}). When done, recap the burger and ask "Sound good, or want to change anything?" — only call build_custom_burger AFTER they confirm.
-Cheese +$1: american, cheddar, pepper jack, swiss. Premium +$1.50: bacon, avocado, fried egg. Free: lettuce, tomato, onion, pickles, jalapeños, mushrooms. Sauces free: ketchup, mustard, mayo, bbq sauce, chipotle mayo, special sauce.
+Walk customer through: patty (beef/chicken), toppings, sauces. Use update_ui(burger_builder={"active":true,"patty":null,"toppings":[],"sauces":[],"price":3300}) to open the builder. Update it as they choose (e.g. burger_builder={"active":true,"patty":"beef patty","toppings":["bacon"],"sauces":[],"price":3900}). When done, recap the burger and ask "Sound good, or want to change anything?" — only call build_custom_burger AFTER they confirm.
+Cheese +4 dirhams: american, cheddar, pepper jack, swiss. Premium +6 dirhams: bacon, avocado, fried egg. Free: lettuce, tomato, onion, pickles, jalapeños, mushrooms. Sauces free: ketchup, mustard, mayo, bbq sauce, chipotle mayo, special sauce.
 """
 
 
@@ -232,7 +233,7 @@ def _fetch_menu_reference() -> str:
             cat = categories[cat_id]
             lines.append(f'{cat["name"]} (categoryId: {cat_id}):')
             for mi in sorted(menu_items.get(cat_id, []), key=lambda x: x["itemId"]):
-                price_str = f"${mi['price'] / 100:.2f}"
+                price_str = f"AED {mi['price'] / 100:.2f}"
                 lines.append(f'  {mi["itemId"]} - {mi["name"]} {price_str}')
             lines.append("")
 

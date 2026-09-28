@@ -12,7 +12,7 @@ def order_update_event(order_summary: dict) -> dict:
     """Construct an order_update UI_Event.
 
     Args:
-        order_summary: Dict with 'items' list and 'total' price in cents.
+        order_summary: Dict with 'items' list and 'total' price in fils (1/100 AED).
 
     Returns:
         UI_Event dict with type 'order_update'.

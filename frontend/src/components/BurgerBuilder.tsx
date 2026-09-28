@@ -26,14 +26,15 @@ const TOPPING_ICONS: Record<string, string> = {
   'special sauce': '✨',
 };
 
+// Add-on prices in fils (100 fils = 1 AED); mirrors _TOPPING_PRICES in agent/order_tools.py.
 const TOPPING_PRICES: Record<string, number> = {
-  'american cheese': 100,
-  'cheddar cheese': 100,
-  'pepper jack cheese': 100,
-  'swiss cheese': 100,
-  'bacon': 150,
-  'avocado': 150,
-  'fried egg': 150,
+  'american cheese': 400,
+  'cheddar cheese': 400,
+  'pepper jack cheese': 400,
+  'swiss cheese': 400,
+  'bacon': 600,
+  'avocado': 600,
+  'fried egg': 600,
 };
 
 export function BurgerBuilder() {

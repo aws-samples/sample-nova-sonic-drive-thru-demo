@@ -371,7 +371,7 @@ class DriveThruVoiceOrderingStack(Stack):
 | SK | String | `ITEM#<itemId>` for items, `METADATA` for category info |
 | name | String | Display name of the item or category |
 | description | String | Item description |
-| price | Number | Price in cents (integer) to avoid floating-point issues |
+| price | Number | Price in fils (integer, 100 fils = 1 AED) to avoid floating-point issues |
 | imageUrl | String | S3 key for the food image (resolved via CloudFront URL) |
 | category | String | Category name (denormalized on items for convenience) |
 | featured | Boolean | Whether the item appears in recommendations |
@@ -393,7 +393,7 @@ class DriveThruVoiceOrderingStack(Stack):
 | orderId | String | UUID, generated on place_order |
 | userId | String | Cognito user sub |
 | items | List | List of `{itemId, name, quantity, unitPrice}` maps |
-| total | Number | Total price in cents |
+| total | Number | Total price in fils |
 | status | String | `confirmed` |
 | createdAt | String | ISO 8601 timestamp |
 
@@ -411,7 +411,7 @@ class OrderLineItem:
     item_id: str
     name: str
     quantity: int
-    unit_price: int  # cents
+    unit_price: int  # fils
 ```
 
 This state is the source of truth during the session. It is persisted to DynamoDB only when `place_order` is invoked.
@@ -430,7 +430,7 @@ interface MenuItem {
   categoryId: string;
   name: string;
   description: string;
-  price: number; // cents
+  price: number; // fils
   imageUrl: string;
   category: string;
   featured: boolean;
@@ -441,7 +441,7 @@ interface OrderItem {
   itemId: string;
   name: string;
   quantity: number;
-  unitPrice: number; // cents
+  unitPrice: number; // fils
 }
 ```
 
@@ -586,7 +586,7 @@ interface OrderItem {
 
 ### Data Validation
 
-- All prices stored as integers (cents) to avoid floating-point arithmetic issues.
+- All prices stored as integers (fils) to avoid floating-point arithmetic issues.
 - Order totals computed server-side in the agent tools, not in the frontend.
 - Item IDs validated against the menu table before adding to order.
 - Quantity must be ≥ 1 for add_to_order and remove_from_order.

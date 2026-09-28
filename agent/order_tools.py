@@ -164,21 +164,22 @@ def cancel_order(tool_context=None) -> dict:
 
 # --- Custom Burger Builder ---
 
-# Base price in cents, plus per-topping prices
-_CUSTOM_BURGER_BASE_PRICE = 899  # $8.99 for patty + bun
+# Base price in fils (100 fils = 1 AED), plus per-topping prices.
+# Mirrored in frontend App.tsx / BurgerBuilder.tsx and the system prompt in main.py.
+_CUSTOM_BURGER_BASE_PRICE = 3300  # AED 33.00 for patty + bun
 _TOPPING_PRICES = {
     # Patty options (included in base)
     "beef patty": 0,
     "chicken patty": 0,
-    # Cheese (+$1.00)
-    "american cheese": 100,
-    "cheddar cheese": 100,
-    "pepper jack cheese": 100,
-    "swiss cheese": 100,
-    # Premium toppings (+$1.50)
-    "bacon": 150,
-    "avocado": 150,
-    "fried egg": 150,
+    # Cheese (+AED 4.00)
+    "american cheese": 400,
+    "cheddar cheese": 400,
+    "pepper jack cheese": 400,
+    "swiss cheese": 400,
+    # Premium toppings (+AED 6.00)
+    "bacon": 600,
+    "avocado": 600,
+    "fried egg": 600,
     # Free toppings
     "lettuce": 0,
     "tomato": 0,
@@ -280,6 +281,6 @@ def build_custom_burger(patty: str, toppings: list, sauces: list = None, quantit
         "patty": patty,
         "toppings": selected_toppings,
         "sauces": selected_sauces,
-        "price": f"${total_price / 100:.2f}",
+        "price": f"AED {total_price / 100:.2f}",
         "total": summary["total"],
     })
