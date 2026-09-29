@@ -46,11 +46,14 @@ generate_config.py – Generates frontend config from CDK outputs
 ./deploy.sh
 ```
 
-This runs four steps:
-1. Deploys BackendStack (DynamoDB, S3, CloudFront, Cognito, AgentCore Runtime, seeds menu data + images)
-2. Generates `frontend/public/runtime-config.json` from backend outputs
-3. Builds the frontend
+This runs five steps:
+1. Builds the frontend
+2. Deploys BackendStack (DynamoDB, S3, CloudFront, Cognito, AgentCore Runtime, seeds menu data + images)
+3. Generates `frontend/public/runtime-config.json` from backend outputs
 4. Deploys FrontendStack (uploads to S3, invalidates CloudFront)
+5. Runs `smoke_test.py` against the live site
+
+The smoke test checks what a browser actually hits, which a healthy CloudFormation stack doesn't guarantee: the Content-Security-Policy allows the Cognito and agent endpoints, `runtime-config.json` matches the stack, every menu image is served as an image, and the agent WebSocket rejects unauthenticated clients. Run it on its own any time with `python3 smoke_test.py`.
 
 ### Step by step
 

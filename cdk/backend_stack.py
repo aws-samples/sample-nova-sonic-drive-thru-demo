@@ -289,10 +289,9 @@ class BackendStack(Stack):
             enable_logging=True,
             log_bucket=self.cf_logs_bucket,
             log_file_prefix="cf-access-logs/",
-            error_responses=[
-                cloudfront.ErrorResponse(http_status=403, response_http_status=200, response_page_path="/index.html"),
-                cloudfront.ErrorResponse(http_status=404, response_http_status=200, response_page_path="/index.html"),
-            ],
+            # No 403/404 -> /index.html (200) error responses: the app has no client-side
+            # routes, and that mapping made missing files (e.g. menu images) look like
+            # successful responses to browsers, monitoring and smoke tests.
         )
 
         # --- Cognito ---

@@ -41,6 +41,12 @@ cdk deploy FrontendStack \
   --require-approval never
 
 echo ""
+echo "=== Step 5: Smoke test the live site ==="
+# Checks what a browser hits (CSP, runtime config, images, agent endpoint). A healthy
+# CloudFormation stack does not mean the site works, so a failure here fails the deploy.
+python3 "$SCRIPT_DIR/smoke_test.py"
+
+echo ""
 echo "=== Done! ==="
 DOMAIN=$(python3 -c "import json; d=json.load(open('backend-outputs.json')); print(d['BackendStack']['DistributionDomainName'])")
 echo "App URL: https://$DOMAIN"
