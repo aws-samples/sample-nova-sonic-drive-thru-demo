@@ -138,22 +138,26 @@ def place_order(user_id: str = "guest") -> dict:
     """
     if _order_state.is_empty():
         return {"error": "Cannot place an empty order."}
+    summary = _order_state.get_summary()
     order_record = _order_state.place_order(user_id)
     _orders_table.put_item(Item=order_record)
     logger.info(
-        "ORDER_PLACED: orderId=%s userId=%s total=%s itemCount=%s",
+        "ORDER_PLACED: orderId=%s orderNumber=%s userId=%s total=%s itemCount=%s",
         order_record["orderId"],
+        order_record["orderNumber"],
         order_record["userId"],
         order_record["total"],
         len(order_record["items"]),
     )
     _order_state.cancel()
 
-    # Update UI to show order confirmation page
+    # Show the confirmation screen with exactly the order that was just persisted
     try:
         current = get_ui_state()
+        current["orderItems"] = summary["items"]
+        current["orderTotal"] = summary["total"]
         current["orderConfirmed"] = True
-        current["orderNumber"] = order_record["orderId"]
+        current["orderNumber"] = order_record["orderNumber"]
         current["burgerBuilder"] = None
         current["highlightedItem"] = None
         current["highlightedCategory"] = None
@@ -161,7 +165,7 @@ def place_order(user_id: str = "guest") -> dict:
     except Exception as e:
         logger.warning("place_order: failed to update UI: %s", e)
 
-    return _sanitize_result({"status": "confirmed", "orderId": order_record["orderId"], "total": order_record["total"]})
+    return _sanitize_result({"status": "confirmed", "orderNumber": order_record["orderNumber"], "total": order_record["total"]})
 
 
 @tool

@@ -132,12 +132,15 @@ class OrderState:
             user_id: The authenticated user's identifier.
 
         Returns:
-            Dict with orderId (UUID), userId, items, total, status, and createdAt.
+            Dict with orderId (UUID, the database key), orderNumber (short number the
+            agent says aloud and the screen shows), userId, items, total, status, and createdAt.
         """
         import random
-        order_number = f"{random.randint(100, 999)}"
         return {
-            "orderId": order_number,
+            # The key must be unique: records are written with put_item, which overwrites.
+            "orderId": str(uuid.uuid4()),
+            # Short and easy to say. It repeats across orders by design, so it is never a key.
+            "orderNumber": f"{random.randint(100, 999)}",
             "userId": user_id,
             "items": [
                 {
