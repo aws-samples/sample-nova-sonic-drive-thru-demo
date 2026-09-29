@@ -158,7 +158,7 @@ def _create_table_and_seed(data: dict) -> "boto3.resource.Table":
 # ---------------------------------------------------------------------------
 
 
-@settings(max_examples=100)
+@settings(max_examples=100, deadline=None)  # moto-backed: per-example time varies, so no deadline
 @given(data=menu_table_data())
 def test_get_categories_returns_all_distinct_categories(data: dict) -> None:
     """For any menu table with N distinct categories, get_categories returns exactly N,
@@ -200,7 +200,7 @@ def menu_data_with_target_category(draw: st.DrawFn):
     return data, target_cat_id
 
 
-@settings(max_examples=100)
+@settings(max_examples=100, deadline=None)  # moto-backed: per-example time varies, so no deadline
 @given(data=menu_data_with_target_category())
 def test_get_items_by_category_returns_only_matching_items(data) -> None:
     """For any existing category, get_items_by_category returns a non-empty list
@@ -251,7 +251,7 @@ def menu_data_with_target_item(draw: st.DrawFn):
     return data, target_cat_id, target_item
 
 
-@settings(max_examples=100)
+@settings(max_examples=100, deadline=None)  # moto-backed: per-example time varies, so no deadline
 @given(data=menu_data_with_target_item())
 def test_get_item_details_returns_complete_item_data(data) -> None:
     """For any item ID that exists in the menu table, get_item_details returns
@@ -287,7 +287,7 @@ def test_get_item_details_returns_complete_item_data(data) -> None:
 # ---------------------------------------------------------------------------
 
 
-@settings(max_examples=100)
+@settings(max_examples=100, deadline=None)  # moto-backed: per-example time varies, so no deadline
 @given(data=menu_table_data())
 def test_get_recommendations_returns_only_featured_items(data: dict) -> None:
     """For any menu table state, get_recommendations returns a list where every

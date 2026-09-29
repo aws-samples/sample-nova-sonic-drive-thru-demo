@@ -1,0 +1,2 @@
+# Test-only dependencies (pytest and hypothesis are already in requirements.txt).
+moto==5.2.2

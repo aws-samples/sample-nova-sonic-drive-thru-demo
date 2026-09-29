@@ -38,11 +38,12 @@ const arbMenuItem: fc.Arbitrary<MenuItem> = fc.record({
 // Validates: Requirements 1.2
 // ============================================================
 describe('Property 2: Menu item rendering includes all required information', () => {
-  it('rendered MenuItemCard contains name, description, formatted price, and image with valid src', () => {
+  it('rendered MenuItemCard contains name, formatted price, and image with valid src', () => {
     /**
      * **Validates: Requirements 1.2**
-     * For any MenuItem, the rendered component should contain the item's name,
-     * description, formatted price, and an image element with a valid src attribute.
+     * For any MenuItem, the rendered card should contain the item's name, formatted
+     * price, and an image element with a valid src attribute. The description is shown
+     * in the item detail modal (see ItemDetailModal.test.tsx), not on the card.
      */
     fc.assert(
       fc.property(arbMenuItem, (item) => {
@@ -51,9 +52,6 @@ describe('Property 2: Menu item rendering includes all required information', ()
 
         // Name is rendered
         expect(screen.getByText(item.name)).toBeDefined();
-
-        // Description is rendered
-        expect(screen.getByText(item.description)).toBeDefined();
 
         // Formatted price is rendered. formatPrice uses a non-breaking space, which
         // testing-library's default normalizer collapses to a plain space in DOM text.

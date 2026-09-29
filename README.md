@@ -36,6 +36,8 @@ cdk/              – Two CDK stacks (BackendStack + FrontendStack)
 data/             – Menu data (JSON) and food images
 deploy.sh         – One-command deploy
 generate_config.py – Generates frontend config from CDK outputs
+smoke_test.py     – Post-deploy check of the live site (run by deploy.sh)
+.github/workflows – CI: agent, frontend and CDK tests on every push and pull request
 ```
 
 ## Deploy
@@ -129,6 +131,25 @@ npm run dev
 ```
 
 Create `frontend/public/runtime-config.json` with your deployed resource IDs for local dev.
+
+## Tests
+
+CI runs these on every push to `main` and every pull request (`.github/workflows/ci.yml`). None of them need AWS access.
+
+```bash
+# Agent (DynamoDB is mocked with moto)
+pip install -r agent/requirements.txt -r agent/requirements-dev.txt
+python -m pytest agent
+
+# Frontend
+cd frontend && npm ci && npm run build && npm test && cd ..
+
+# CDK (synthesizes both stacks; needs the frontend build above)
+pip install -r cdk/requirements.txt
+python -m pytest cdk/tests
+```
+
+The CDK tests include regression checks for problems that only appear after deploying: an invalid Content-Security-Policy, the frontend deploy deleting the menu images, CloudFront serving missing files as the app page, open sign-up, and the agent's model drifting from its IAM grant.
 
 ## Agent Tools
 

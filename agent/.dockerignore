@@ -4,4 +4,5 @@ __pycache__
 .hypothesis
 tests/
 test_*.py
+requirements-dev.txt
 .venv

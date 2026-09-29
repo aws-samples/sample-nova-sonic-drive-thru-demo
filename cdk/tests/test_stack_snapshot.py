@@ -1,268 +1,203 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""CDK snapshot and resource verification tests for DriveThruVoiceOrderingStack.
+"""CDK resource verification tests for BackendStack and FrontendStack.
 
-Validates Requirements 7.1–7.11:
-- DynamoDB tables (menu + orders)
-- S3 buckets (images + hosting)
-- CloudFront distribution with OAI
-- Cognito User Pool, User Pool Client, Identity Pool
-- IAM roles (authenticated + agent)
+Validates Requirements 7.1–7.11, plus regression tests for failures that only showed up
+after deployment (each is invisible in local development):
+- a CSP wildcard in the middle of a hostname silently blocked Cognito and the agent WebSocket
+- the frontend deployment pruned the food images out of the shared hosting bucket
+- CloudFront answered missing files with the app page and HTTP 200, hiding the missing images
+- open sign-up let anyone open paid voice sessions
+- the model ID in the agent and in its IAM grant drifted apart
 """
 
 import json
-import pytest
-import aws_cdk as cdk
-from aws_cdk.assertions import Template, Match
-
-import sys
 import os
+import re
+import sys
 
-# Add the cdk directory to the path so we can import the stack
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import aws_cdk as cdk
+import pytest
+from aws_cdk.assertions import Match, Template
 
-from backend_stack import BackendStack
+CDK_DIR = os.path.join(os.path.dirname(__file__), "..")
+REPO_ROOT = os.path.join(CDK_DIR, "..")
+sys.path.insert(0, CDK_DIR)  # the stacks
+sys.path.insert(0, REPO_ROOT)  # smoke_test's CSP checker, so there is one implementation
+
+from backend_stack import BackendStack  # noqa: E402
+from frontend_stack import FrontendStack  # noqa: E402
+from smoke_test import csp_problems  # noqa: E402
+
+REGION = "us-east-1"
+ENV = cdk.Environment(account="123456789012", region=REGION)
 
 
 @pytest.fixture(scope="module")
 def template():
-    """Synthesize the stack and return the CloudFormation template."""
-    app = cdk.App()
-    stack = BackendStack(app, "TestStack")
-    return Template.from_stack(stack)
+    """Synthesize the backend stack in a concrete region so region-pinned values resolve."""
+    return Template.from_stack(BackendStack(cdk.App(), "TestStack", env=ENV))
 
 
 @pytest.fixture(scope="module")
 def template_json(template):
-    """Return the raw CloudFormation template as a dict for snapshot comparison."""
     return template.to_json()
 
 
-class TestSnapshotStructure:
-    """Snapshot-style tests verifying the template has expected top-level structure."""
+@pytest.fixture(scope="module")
+def frontend_template():
+    # Packages frontend/dist, so the frontend must be built first (CI does this)
+    stack = FrontendStack(
+        cdk.App(), "TestFrontendStack",
+        hosting_bucket_name="test-hosting-bucket", distribution_id="E2EXAMPLE", env=ENV,
+    )
+    return Template.from_stack(stack)
 
-    def test_template_has_resources(self, template_json):
-        """Template should contain a Resources section."""
-        assert "Resources" in template_json
 
-    def test_template_has_outputs(self, template_json):
-        """Template should contain Outputs for key resource identifiers."""
-        assert "Outputs" in template_json
-        outputs = template_json["Outputs"]
-        expected_output_keys = [
-            "MenuTableName",
-            "OrdersTableName",
-            "ImagesBucketName",
-            "HostingBucketName",
-            "DistributionId",
-            "DistributionDomainName",
-            "UserPoolId",
-            "UserPoolClientId",
-            "IdentityPoolId",
-            "AgentRuntimeId",
-            "AgentEndpointUrl",
-        ]
-        for key in expected_output_keys:
-            assert key in outputs, f"Missing output: {key}"
+def _resources(template_json, resource_type):
+    return [r for r in template_json["Resources"].values() if r["Type"] == resource_type]
+
+
+class TestOutputs:
+    def test_outputs_used_by_deploy_scripts_exist(self, template_json):
+        """deploy.sh, generate_config.py and smoke_test.py read these outputs."""
+        expected = {
+            "MenuTableName", "OrdersTableName", "ImagesBucketName", "HostingBucketName",
+            "DistributionId", "DistributionDomainName", "UserPoolId", "UserPoolClientId",
+            "AgentRuntimeId", "AgentRuntimeArn",
+        }
+        assert expected <= set(template_json["Outputs"])
 
 
 class TestDynamoDBTables:
-    """Verify DynamoDB tables — Requirements 7.1, 7.2."""
+    """Requirements 7.1, 7.2."""
 
     def test_has_two_dynamodb_tables(self, template):
         template.resource_count_is("AWS::DynamoDB::Table", 2)
 
     def test_menu_table_schema(self, template):
-        """Menu table has PK (String) partition key and SK (String) sort key."""
-        template.has_resource_properties(
-            "AWS::DynamoDB::Table",
-            {
-                "TableName": "DriveThruMenu",
-                "KeySchema": Match.array_with(
-                    [
-                        {"AttributeName": "PK", "KeyType": "HASH"},
-                        {"AttributeName": "SK", "KeyType": "RANGE"},
-                    ]
-                ),
-            },
-        )
+        template.has_resource_properties("AWS::DynamoDB::Table", {
+            "TableName": "DriveThruMenu",
+            "KeySchema": Match.array_with([
+                {"AttributeName": "PK", "KeyType": "HASH"},
+                {"AttributeName": "SK", "KeyType": "RANGE"},
+            ]),
+        })
 
     def test_orders_table_schema(self, template):
-        """Orders table has orderId (String) partition key."""
-        template.has_resource_properties(
-            "AWS::DynamoDB::Table",
-            {
-                "TableName": "DriveThruOrders",
-                "KeySchema": Match.array_with(
-                    [
-                        {"AttributeName": "orderId", "KeyType": "HASH"},
-                    ]
-                ),
-            },
-        )
+        template.has_resource_properties("AWS::DynamoDB::Table", {
+            "TableName": "DriveThruOrders",
+            "KeySchema": Match.array_with([{"AttributeName": "orderId", "KeyType": "HASH"}]),
+        })
 
     def test_tables_use_pay_per_request(self, template):
-        """Both tables use PAY_PER_REQUEST billing mode."""
-        template.has_resource_properties(
-            "AWS::DynamoDB::Table",
-            {"BillingMode": "PAY_PER_REQUEST"},
-        )
+        template.has_resource_properties("AWS::DynamoDB::Table", {"BillingMode": "PAY_PER_REQUEST"})
 
 
 class TestS3Buckets:
-    """Verify S3 buckets — Requirements 7.3, 7.4."""
+    """Requirements 7.3, 7.4."""
 
-    def test_has_two_s3_buckets(self, template):
+    def test_bucket_count(self, template):
         template.resource_count_is("AWS::S3::Bucket", 4)
 
     def test_buckets_block_public_access(self, template):
-        """Both buckets should block all public access."""
-        template.has_resource_properties(
-            "AWS::S3::Bucket",
-            {
-                "PublicAccessBlockConfiguration": {
-                    "BlockPublicAcls": True,
-                    "BlockPublicPolicy": True,
-                    "IgnorePublicAcls": True,
-                    "RestrictPublicBuckets": True,
-                },
+        template.has_resource_properties("AWS::S3::Bucket", {
+            "PublicAccessBlockConfiguration": {
+                "BlockPublicAcls": True, "BlockPublicPolicy": True,
+                "IgnorePublicAcls": True, "RestrictPublicBuckets": True,
             },
-        )
+        })
 
 
 class TestCloudFront:
-    """Verify CloudFront distribution — Requirements 7.5, 7.11."""
+    """Requirements 7.5, 7.11."""
 
     def test_has_one_distribution(self, template):
         template.resource_count_is("AWS::CloudFront::Distribution", 1)
 
     def test_has_origin_access_identity(self, template):
-        """OAI exists for restricting direct S3 access (Req 7.11)."""
-        template.resource_count_is(
-            "AWS::CloudFront::CloudFrontOriginAccessIdentity", 1
-        )
+        template.resource_count_is("AWS::CloudFront::CloudFrontOriginAccessIdentity", 1)
 
     def test_distribution_has_default_root_object(self, template):
-        template.has_resource_properties(
-            "AWS::CloudFront::Distribution",
-            {
-                "DistributionConfig": Match.object_like(
-                    {"DefaultRootObject": "index.html"}
-                ),
-            },
-        )
+        template.has_resource_properties("AWS::CloudFront::Distribution", {
+            "DistributionConfig": Match.object_like({"DefaultRootObject": "index.html"}),
+        })
 
     def test_distribution_redirects_to_https(self, template):
-        template.has_resource_properties(
-            "AWS::CloudFront::Distribution",
-            {
-                "DistributionConfig": Match.object_like(
-                    {
-                        "DefaultCacheBehavior": Match.object_like(
-                            {"ViewerProtocolPolicy": "redirect-to-https"}
-                        ),
-                    }
-                ),
-            },
-        )
+        template.has_resource_properties("AWS::CloudFront::Distribution", {
+            "DistributionConfig": Match.object_like({
+                "DefaultCacheBehavior": Match.object_like({"ViewerProtocolPolicy": "redirect-to-https"}),
+            }),
+        })
+
+    def test_csp_is_valid_and_allows_the_endpoints_the_app_uses(self, template_json):
+        [policy] = _resources(template_json, "AWS::CloudFront::ResponseHeadersPolicy")
+        csp = policy["Properties"]["ResponseHeadersPolicyConfig"]["SecurityHeadersConfig"][
+            "ContentSecurityPolicy"]["ContentSecurityPolicy"]
+        assert isinstance(csp, str), "CSP should resolve to a literal string in a concrete region"
+        assert csp_problems(csp, [
+            f"https://cognito-idp.{REGION}.amazonaws.com",
+            f"wss://bedrock-agentcore.{REGION}.amazonaws.com",
+        ]) == []
+
+    def test_csp_checker_rejects_mid_hostname_wildcards(self):
+        """The header that broke production must fail this suite."""
+        broken = ("connect-src 'self' https://cognito-idp.*.amazonaws.com "
+                  "wss://bedrock-agentcore.*.amazonaws.com")
+        problems = csp_problems(broken, [f"wss://bedrock-agentcore.{REGION}.amazonaws.com"])
+        assert any("invalid source" in p for p in problems)
+        assert any("blocks wss://" in p for p in problems)
+
+    def test_missing_files_are_not_served_as_the_app_page(self, template_json):
+        """The app has no client-side routes. Mapping 403/404 to index.html with a 200 only
+        disguised the missing images as successful responses."""
+        [distribution] = _resources(template_json, "AWS::CloudFront::Distribution")
+        error_responses = distribution["Properties"]["DistributionConfig"].get("CustomErrorResponses", [])
+        assert [e for e in error_responses if e.get("ResponseCode") == 200] == []
 
 
 class TestCognito:
-    """Verify Cognito resources — Requirements 7.6, 7.7."""
+    """Requirements 7.6, 7.7."""
 
-    def test_has_one_user_pool(self, template):
+    def test_has_one_user_pool_and_client(self, template):
         template.resource_count_is("AWS::Cognito::UserPool", 1)
-
-    def test_has_one_user_pool_client(self, template):
         template.resource_count_is("AWS::Cognito::UserPoolClient", 1)
 
-    def test_has_one_identity_pool(self, template):
-        template.resource_count_is("AWS::Cognito::IdentityPool", 1)
-
     def test_user_pool_has_email_sign_in(self, template):
-        template.has_resource_properties(
-            "AWS::Cognito::UserPool",
-            {
-                "UsernameAttributes": Match.array_with(["email"]),
-            },
-        )
+        template.has_resource_properties("AWS::Cognito::UserPool", {
+            "UsernameAttributes": Match.array_with(["email"]),
+        })
 
-    def test_identity_pool_disallows_unauthenticated(self, template):
-        template.has_resource_properties(
-            "AWS::Cognito::IdentityPool",
-            {
-                "AllowUnauthenticatedIdentities": False,
-            },
-        )
+    def test_only_admins_can_create_accounts(self, template):
+        """Every account can open paid Nova Sonic sessions, so self sign-up stays off."""
+        template.has_resource_properties("AWS::Cognito::UserPool", {
+            "AdminCreateUserConfig": Match.object_like({"AllowAdminCreateUserOnly": True}),
+        })
 
 
-class TestIAMRoles:
-    """Verify IAM roles — Requirements 7.9, 7.10."""
+class TestAgentRuntime:
+    """Requirement 7.9."""
 
-    def test_has_at_least_two_iam_roles(self, template):
-        """At least authenticated role + agent role."""
-        resources = template.to_json()["Resources"]
-        role_count = sum(
-            1
-            for r in resources.values()
-            if r["Type"] == "AWS::IAM::Role"
-        )
-        assert role_count >= 2, f"Expected at least 2 IAM roles, found {role_count}"
+    def test_runtime_role_is_assumed_by_agentcore(self, template):
+        template.has_resource_properties("AWS::IAM::Role", {
+            "AssumeRolePolicyDocument": Match.object_like({
+                "Statement": Match.array_with([
+                    Match.object_like({
+                        "Principal": Match.object_like({"Service": "bedrock-agentcore.amazonaws.com"}),
+                    }),
+                ]),
+            }),
+        })
 
-    def test_agent_role_assumed_by_bedrock(self, template):
-        """Agent role should be assumable by bedrock.amazonaws.com (Req 7.9)."""
-        template.has_resource_properties(
-            "AWS::IAM::Role",
-            {
-                "AssumeRolePolicyDocument": Match.object_like(
-                    {
-                        "Statement": Match.array_with(
-                            [
-                                Match.object_like(
-                                    {
-                                        "Principal": Match.object_like(
-                                            {"Service": "bedrock.amazonaws.com"}
-                                        ),
-                                    }
-                                )
-                            ]
-                        ),
-                    }
-                ),
-            },
-        )
-
-    def test_authenticated_role_assumed_by_cognito(self, template):
-        """Authenticated role should be assumable via cognito-identity (Req 7.10)."""
-        template.has_resource_properties(
-            "AWS::IAM::Role",
-            {
-                "AssumeRolePolicyDocument": Match.object_like(
-                    {
-                        "Statement": Match.array_with(
-                            [
-                                Match.object_like(
-                                    {
-                                        "Principal": Match.object_like(
-                                            {
-                                                "Federated": "cognito-identity.amazonaws.com"
-                                            }
-                                        ),
-                                    }
-                                )
-                            ]
-                        ),
-                    }
-                ),
-            },
-        )
+    def test_runtime_may_invoke_the_model_the_agent_uses(self, template_json):
+        """The model ID lives in agent/main.py and in the IAM grant; they must agree."""
+        with open(os.path.join(REPO_ROOT, "agent", "main.py")) as f:
+            [model_id] = re.findall(r'model_id="([^"]+)"', f.read())
+        assert f"arn:aws:bedrock:{REGION}::foundation-model/{model_id}" in json.dumps(template_json)
 
 
-class TestIdentityPoolRoleAttachment:
-    """Verify Identity Pool role attachment — Requirement 7.7."""
-
-    def test_has_identity_pool_role_attachment(self, template):
-        template.resource_count_is(
-            "AWS::Cognito::IdentityPoolRoleAttachment", 1
-        )
+class TestFrontendStack:
+    def test_frontend_deploy_does_not_prune_the_food_images(self, frontend_template):
+        """The hosting bucket is shared with the images BackendStack uploads under images/."""
+        frontend_template.has_resource_properties("Custom::CDKBucketDeployment", {"Prune": False})

@@ -19,12 +19,13 @@ const sampleItem: MenuItem = {
 };
 
 describe('MenuItemCard', () => {
-  it('renders item name, description, and formatted price', () => {
+  it('renders item name and formatted price', () => {
     render(<MenuItemCard item={sampleItem} />);
 
     expect(screen.getByText('Classic Burger')).toBeInTheDocument();
-    expect(screen.getByText('A juicy beef patty with lettuce and tomato')).toBeInTheDocument();
     expect(screen.getByText('AED 29.00')).toBeInTheDocument();
+    // The card is kept compact; the description is shown in ItemDetailModal instead
+    expect(screen.queryByText('A juicy beef patty with lettuce and tomato')).not.toBeInTheDocument();
   });
 
   it('renders an image with alt text and correct src', () => {
