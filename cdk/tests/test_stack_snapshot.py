@@ -26,7 +26,7 @@ REPO_ROOT = os.path.join(CDK_DIR, "..")
 sys.path.insert(0, CDK_DIR)  # the stacks
 sys.path.insert(0, REPO_ROOT)  # smoke_test's CSP checker, so there is one implementation
 
-from backend_stack import BackendStack  # noqa: E402
+from backend_stack import DEFAULT_BEDROCK_REGION, BackendStack  # noqa: E402
 from frontend_stack import FrontendStack  # noqa: E402
 from smoke_test import csp_problems  # noqa: E402
 
@@ -190,11 +190,16 @@ class TestAgentRuntime:
             }),
         })
 
-    def test_runtime_may_invoke_the_model_the_agent_uses(self, template_json):
-        """The model ID lives in agent/main.py and in the IAM grant; they must agree."""
+    def test_runtime_may_invoke_the_model_the_agent_uses(self, template, template_json):
+        """The model ID lives in agent/main.py and in the IAM grant; they must agree, and the
+        grant must be in the region the agent is told to call the model in."""
         with open(os.path.join(REPO_ROOT, "agent", "main.py")) as f:
             [model_id] = re.findall(r'model_id="([^"]+)"', f.read())
-        assert f"arn:aws:bedrock:{REGION}::foundation-model/{model_id}" in json.dumps(template_json)
+        template.has_resource_properties("AWS::BedrockAgentCore::Runtime", {
+            "EnvironmentVariables": Match.object_like({"BEDROCK_REGION": DEFAULT_BEDROCK_REGION}),
+        })
+        assert (f"arn:aws:bedrock:{DEFAULT_BEDROCK_REGION}::foundation-model/{model_id}"
+                in json.dumps(template_json))
 
 
 class TestFrontendStack:

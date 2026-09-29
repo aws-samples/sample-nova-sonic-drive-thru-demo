@@ -24,6 +24,12 @@ import aws_cdk.aws_bedrock_agentcore_alpha as agentcore
 from cdk_nag import NagSuppressions
 from constructs import Construct
 
+# The region the agent calls Nova Sonic in. It can differ from the stack's region: everything
+# else (site, sign-in, runtime, tables) stays where the stack is. Nova 2 Sonic in us-east-1
+# failed every new stream on Sep 29, 2026 while us-west-2 worked, so the model runs there.
+# Override with `cdk deploy -c bedrockRegion=<region>`.
+DEFAULT_BEDROCK_REGION = "us-west-2"
+
 
 class BackendStack(Stack):
 
@@ -330,6 +336,7 @@ class BackendStack(Stack):
         # Build the agent Docker image and deploy to AgentCore Runtime.
         # The Dockerfile installs all Python dependencies (strands-agents, boto3, etc.)
         agent_code_path = os.path.join(os.path.dirname(__file__), "..", "agent")
+        bedrock_region = self.node.try_get_context("bedrockRegion") or DEFAULT_BEDROCK_REGION
 
         self.agent_runtime = agentcore.Runtime(
             self, "DriveThruAgentRuntimeV4",
@@ -343,6 +350,7 @@ class BackendStack(Stack):
                 "ORDERS_TABLE_NAME": self.orders_table.table_name,
                 "IMAGES_BUCKET_NAME": self.images_bucket.bucket_name,
                 "AWS_REGION": self.region,
+                "BEDROCK_REGION": bedrock_region,  # read by agent/main.py for the Nova Sonic client
             },
             description="Drive-thru voice ordering agent powered by Nova Sonic",
         )
@@ -351,8 +359,7 @@ class BackendStack(Stack):
             effect=iam.Effect.ALLOW,
             actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
             resources=[
-                f"arn:aws:bedrock:us-east-1:{self.account}:inference-profile/us.amazon.nova-2-sonic-v1:0",
-                "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-2-sonic-v1:0",
+                f"arn:aws:bedrock:{bedrock_region}::foundation-model/amazon.nova-2-sonic-v1:0",
             ],
         ))
         self.orders_table.grant_read_write_data(self.agent_runtime)
