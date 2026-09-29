@@ -38,7 +38,8 @@ try:
         get_categories, get_items_by_category, get_recommendations,
     )
     from agent.order_tools import (
-        add_to_order, build_custom_burger, cancel_order, get_order_summary, place_order, remove_from_order,
+        add_to_order, build_custom_burger, cancel_order, custom_burger_price, get_order_summary, place_order,
+        remove_from_order,
     )
     from agent.ui_state_manager import set_websocket, clear_websocket, set_ui_state, get_ui_state, reset_ui_state
 except ModuleNotFoundError:
@@ -46,7 +47,8 @@ except ModuleNotFoundError:
         get_categories, get_items_by_category, get_recommendations,
     )
     from order_tools import (
-        add_to_order, build_custom_burger, cancel_order, get_order_summary, place_order, remove_from_order,
+        add_to_order, build_custom_burger, cancel_order, custom_burger_price, get_order_summary, place_order,
+        remove_from_order,
     )
     from ui_state_manager import set_websocket, clear_websocket, set_ui_state, get_ui_state, reset_ui_state
 
@@ -92,32 +94,20 @@ def load_menu() -> dict:
 
 @tool
 def update_ui(
-    categories: list = None,
-    menu_items: dict = None,
     highlighted_category: str = None,
     highlighted_item: str = None,
-    order_items: list = None,
-    order_total: int = None,
-    order_confirmed: bool = None,
-    order_number: str = None,
     burger_builder: dict = None,
 ) -> dict:
-    """Update the customer's screen. Call this after any action that should change the display.
+    """Update what the customer's screen highlights, and show the burger builder.
 
     Only include the fields you want to change — others keep their current value.
+    The menu, the order and all prices are updated automatically by the menu and order tools.
 
-    Args:
-        categories: List of menu categories. Each: {"categoryId": "burgers", "name": "Burgers", "sortOrder": 1}
-        menu_items: Dict of categoryId to list of items. Each item: {"itemId": "...", "name": "...", "description": "...", "price": 2900, "imageUrl": "...", "category": "...", "featured": true, "sortOrder": 1}
     Args:
         highlighted_category: Category ID to highlight/scroll to (e.g. "burgers"). Set to "" to clear.
         highlighted_item: Item ID to highlight and show details for (e.g. "classic-burger"). Set to "" to clear.
-        order_items: Full list of items in the order. Each item:
-            {"itemId": "...", "name": "...", "quantity": 1, "unitPrice": 2900, "specialInstructions": "..."}
-        order_total: Total price in fils (100 fils = 1 AED).
-        order_confirmed: Set to true when order is placed.
-        order_number: The order number (set when order is confirmed).
-        burger_builder: Show/update the burger builder UI. Set to {"active": true, "patty": null, "toppings": [], "sauces": [], "price": 3300} to show progress. Set to {"active": false} to close it.
+        burger_builder: Show/update the burger builder. Set to {"active": true, "patty": null, "toppings": [], "sauces": []}
+            and update it as the customer chooses. The price is calculated automatically. Set to {"active": false} to close it.
 
     Returns:
         Confirmation that the update was sent.
@@ -125,29 +115,20 @@ def update_ui(
     current = get_ui_state()
 
     # Guard: if menu hasn't been loaded yet, warn the agent
-    if not current.get("categories") and categories is None:
+    if not current.get("categories"):
         if highlighted_item is not None or highlighted_category is not None:
             return {"error": "Menu not loaded yet. Call load_menu first before highlighting items."}
 
-    if categories is not None:
-        current["categories"] = categories
-    if menu_items is not None:
-        current["menuItems"] = menu_items
     if highlighted_category is not None:
         current["highlightedCategory"] = highlighted_category or None
     if highlighted_item is not None:
         current["highlightedItem"] = highlighted_item or None
-    if order_items is not None:
-        current["orderItems"] = order_items
-    if order_total is not None:
-        current["orderTotal"] = order_total
-    if order_confirmed is not None:
-        current["orderConfirmed"] = order_confirmed
-    if order_number is not None:
-        current["orderNumber"] = order_number
     if burger_builder is not None:
         if isinstance(burger_builder, dict) and burger_builder.get("active"):
-            current["burgerBuilder"] = burger_builder
+            builder = dict(burger_builder)
+            # The server prices the preview — never trust a model-supplied total
+            builder["price"] = custom_burger_price(builder.get("toppings"))
+            current["burgerBuilder"] = builder
         else:
             current["burgerBuilder"] = None
 
@@ -174,20 +155,20 @@ FIRST ACTION: Call load_menu before anything else to populate the screen.
 GREETING: After load_menu, say "Welcome to our drive-thru! How can I help you?"
 
 RULES:
-- All prices are in UAE dirhams (AED). Prices and totals in tool results and update_ui are integers in fils (100 fils = 1 dirham), so 2900 means 29 dirhams.
+- All prices are in UAE dirhams (AED). Prices and totals in tool results are integers in fils (100 fils = 1 dirham), so 2900 means 29 dirhams.
 - Say prices in dirhams, e.g. "twenty-nine dirhams". Never say "dollars", and never read out the letters "AED".
 - Never mention the screen/UI in speech
 - Never fabricate items — only use menu above
 - When DESCRIBING an item or customer asks about it: call update_ui(highlighted_item="<exact itemId>") to show details
 - When customer ORDERS an item (e.g. "I'll have the..."): just call add_to_order directly, do NOT highlight it
 - When mentioning a category: call update_ui(highlighted_category="<categoryId>")
-- When order changes: call update_ui(order_items=[...], order_total=...)
+- The order shown on screen updates automatically when you add, remove, cancel or place — never describe it any other way
 - Special instructions: pass as special_instructions in add_to_order
 
 TOOLS: load_menu, get_categories, get_items_by_category, get_recommendations, add_to_order, build_custom_burger, remove_from_order, get_order_summary, place_order, cancel_order, update_ui, get_ui_context
 
 BUILD YOUR OWN BURGER (itemId: custom-burger):
-Walk customer through: patty (beef/chicken), toppings, sauces. Use update_ui(burger_builder={"active":true,"patty":null,"toppings":[],"sauces":[],"price":3300}) to open the builder. Update it as they choose (e.g. burger_builder={"active":true,"patty":"beef patty","toppings":["bacon"],"sauces":[],"price":3900}). When done, recap the burger and ask "Sound good, or want to change anything?" — only call build_custom_burger AFTER they confirm.
+Walk customer through: patty (beef/chicken), toppings, sauces. Use update_ui(burger_builder={"active":true,"patty":null,"toppings":[],"sauces":[]}) to open the builder. Update it as they choose (e.g. burger_builder={"active":true,"patty":"beef patty","toppings":["bacon"],"sauces":[]}); its price is calculated automatically. When done, recap the burger and ask "Sound good, or want to change anything?" — only call build_custom_burger AFTER they confirm.
 Cheese +4 dirhams: american, cheddar, pepper jack, swiss. Premium +6 dirhams: bacon, avocado, fried egg. Free: lettuce, tomato, onion, pickles, jalapeños, mushrooms. Sauces free: ketchup, mustard, mayo, bbq sauce, chipotle mayo, special sauce.
 """
 

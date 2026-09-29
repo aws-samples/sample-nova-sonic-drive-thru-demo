@@ -141,7 +141,7 @@ Create `frontend/public/runtime-config.json` with your deployed resource IDs for
 | `get_order_summary` | Returns current order |
 | `place_order` | Persists order to DynamoDB |
 | `cancel_order` | Clears the order |
-| `update_ui` | Sets the frontend display state (highlights, order, burger builder) |
+| `update_ui` | Highlights a category or item, and shows the burger builder (the order, menu and all prices are written only by the tools above) |
 | `get_ui_context` | Returns what the customer is looking at |
 
 ## Redeploying

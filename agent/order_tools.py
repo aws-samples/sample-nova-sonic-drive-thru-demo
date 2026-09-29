@@ -64,6 +64,23 @@ def get_order_state() -> OrderState:
     return _order_state
 
 
+def _refresh_order_display(**extra_ui_fields) -> None:
+    """Show the current order on the customer's screen.
+
+    The order state is the only source for the order items and total on screen. Every tool
+    that changes the order calls this, so the display can never drift from what gets placed.
+    """
+    try:
+        summary = _order_state.get_summary()
+        current = get_ui_state()
+        current["orderItems"] = summary["items"]
+        current["orderTotal"] = summary["total"]
+        current.update(extra_ui_fields)
+        set_ui_state(current)
+    except Exception as e:
+        logger.warning("failed to refresh order display: %s", e)
+
+
 @tool
 def add_to_order(item_id: str, category_id: str, quantity: int = 1, special_instructions: str = "") -> dict:
     """Adds a menu item to the current order and updates the customer's screen.
@@ -83,15 +100,7 @@ def add_to_order(item_id: str, category_id: str, quantity: int = 1, special_inst
         return {"error": f"Item '{item_id}' not found in category '{category_id}'."}
     _order_state.add_item(item_id, menu_item.get("name", ""), quantity, int(menu_item.get("price", 0)), special_instructions)
     summary = _order_state.get_summary()
-
-    # Auto-update the UI: refresh the order display (don't highlight — that opens the modal)
-    try:
-        current = get_ui_state()
-        current["orderItems"] = summary["items"]
-        current["orderTotal"] = summary["total"]
-        set_ui_state(current)
-    except Exception as e:
-        logger.warning("add_to_order: failed to auto-update UI: %s", e)
+    _refresh_order_display()  # don't highlight the item — that opens the details modal
 
     # Return minimal confirmation to keep tool result small for Nova Sonic
     return _sanitize_result({
@@ -108,6 +117,7 @@ def remove_from_order(item_id: str, quantity: int = 1) -> dict:
     if not _order_state.remove_item(item_id, quantity):
         return {"error": f"Item '{item_id}' is not in the current order."}
     summary = _order_state.get_summary()
+    _refresh_order_display()
     return _sanitize_result({"status": "removed", "item": item_id, "total": summary["total"], "itemCount": len(summary["items"])})
 
 
@@ -159,6 +169,7 @@ def cancel_order(tool_context=None) -> dict:
     """Clears all items from the current order."""
     logger.info("ORDER_CANCELLED: itemCount=%s", len(_order_state.items))
     _order_state.cancel()
+    _refresh_order_display()
     return _sanitize_result({"status": "cancelled"})
 
 
@@ -197,6 +208,18 @@ _TOPPING_PRICES = {
 }
 
 
+def custom_burger_price(toppings) -> int:
+    """Price in fils of a custom burger with the given toppings.
+
+    The single price calculation for custom burgers: used for the builder preview on screen
+    and for the item added to the order. Unknown toppings add nothing; build_custom_burger
+    rejects them before pricing.
+    """
+    return _CUSTOM_BURGER_BASE_PRICE + sum(
+        _TOPPING_PRICES.get(str(t).lower().strip(), 0) for t in (toppings or [])
+    )
+
+
 @tool
 def build_custom_burger(patty: str, toppings: list, sauces: list = None, quantity: int = 1) -> dict:
     """Build a custom burger with chosen patty, toppings, and sauces. Adds it to the order.
@@ -223,20 +246,13 @@ def build_custom_burger(patty: str, toppings: list, sauces: list = None, quantit
     if patty not in ("beef patty", "chicken patty"):
         return {"error": f"Invalid patty '{patty}'. Choose 'beef patty' or 'chicken patty'."}
 
-    # Calculate price
-    total_price = _CUSTOM_BURGER_BASE_PRICE
     selected_toppings = []
-    price_breakdown = [{"item": f"Custom burger ({patty})", "price": _CUSTOM_BURGER_BASE_PRICE}]
-
     for topping in toppings:
         topping = topping.lower().strip()
         if topping not in _TOPPING_PRICES:
             return {"error": f"Unknown topping '{topping}'. Available: {', '.join(sorted(_TOPPING_PRICES.keys()))}"}
-        price = _TOPPING_PRICES[topping]
-        total_price += price
         selected_toppings.append(topping)
-        if price > 0:
-            price_breakdown.append({"item": f"+ {topping}", "price": price})
+    total_price = custom_burger_price(selected_toppings)
 
     selected_sauces = []
     for sauce in sauces:
@@ -263,17 +279,7 @@ def build_custom_burger(patty: str, toppings: list, sauces: list = None, quantit
 
     _order_state.add_item(item_id, name, quantity, total_price, description)
     summary = _order_state.get_summary()
-
-    # Auto-update the UI: close burger builder, update order
-    try:
-        current = get_ui_state()
-        current["burgerBuilder"] = None
-        current["highlightedItem"] = None
-        current["orderItems"] = summary["items"]
-        current["orderTotal"] = summary["total"]
-        set_ui_state(current)
-    except Exception as e:
-        logger.warning("build_custom_burger: failed to auto-update UI: %s", e)
+    _refresh_order_display(burgerBuilder=None, highlightedItem=None)  # close the builder
 
     return _sanitize_result({
         "status": "added",
