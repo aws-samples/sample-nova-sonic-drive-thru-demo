@@ -1,22 +1,25 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Order management tools for the drive-thru voice ordering agent."""
+"""Order tools for the drive-thru voice ordering agent: the order, and the build-your-own burger.
 
+Each tool works on the conversation's Session (from the tool context) and is the only writer of
+the order and prices on screen, so the screen always shows what would be placed.
+"""
+
+import hashlib
 import json
 import logging
 import os
 from decimal import Decimal
 
 import boto3
-from strands import tool
+from strands import ToolContext, tool
 
 try:
-    from agent.order_state import OrderState
-    from agent.ui_state_manager import set_ui_state, get_ui_state
+    from agent.session import Session, session_of
 except ModuleNotFoundError:
-    from order_state import OrderState
-    from ui_state_manager import set_ui_state, get_ui_state
+    from session import Session, session_of
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +49,6 @@ _REGION = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-
 _dynamodb = boto3.resource("dynamodb", region_name=_REGION)
 _menu_table = _dynamodb.Table(os.environ.get("MENU_TABLE_NAME", "DriveThruMenu"))
 _orders_table = _dynamodb.Table(os.environ.get("ORDERS_TABLE_NAME", "DriveThruOrders"))
-_order_state = OrderState()
-_session_id = "local"  # replaced per connection by main.voice_chat
 
 
 def set_tables(menu_table, orders_table) -> None:
@@ -56,43 +57,24 @@ def set_tables(menu_table, orders_table) -> None:
     _orders_table = orders_table
 
 
-def set_order_state(state: OrderState) -> None:
-    global _order_state
-    _order_state = state
-
-
-def get_order_state() -> OrderState:
-    return _order_state
-
-
-def set_session_id(session_id: str) -> None:
-    """Record which voice session orders are taken in (stored on each placed order)."""
-    global _session_id
-    _session_id = session_id
-
-
-def _refresh_order_display(**extra_ui_fields) -> None:
-    """Show the current order on the customer's screen.
+def _refresh_order_display(session: Session, **extra_screen_fields) -> None:
+    """Show the session's current order on the customer's screen.
 
     The order state is the only source for the order items and total on screen. Every tool
     that changes the order calls this, so the display can never drift from what gets placed.
     It also closes any item popup: the screen is voice-driven, so nobody else will close it,
     and once the order changes the customer has moved on from that item.
     """
-    try:
-        summary = _order_state.get_summary()
-        current = get_ui_state()
-        current["orderItems"] = summary["items"]
-        current["orderTotal"] = summary["total"]
-        current["highlightedItem"] = None
-        current.update(extra_ui_fields)
-        set_ui_state(current)
-    except Exception as e:
-        logger.warning("failed to refresh order display: %s", e)
+    summary = session.order.get_summary()
+    session.update_screen(
+        orderItems=summary["items"], orderTotal=summary["total"], highlightedItem=None, **extra_screen_fields,
+    )
 
 
-@tool
-def add_to_order(item_id: str, category_id: str, quantity: int = 1, special_instructions: str = "") -> dict:
+@tool(context=True)
+def add_to_order(
+    item_id: str, category_id: str, tool_context: ToolContext, quantity: int = 1, special_instructions: str = "",
+) -> dict:
     """Adds a menu item to the current order and updates the customer's screen.
 
     Args:
@@ -101,6 +83,7 @@ def add_to_order(item_id: str, category_id: str, quantity: int = 1, special_inst
         quantity: Number of items to add (must be >= 1).
         special_instructions: Customer notes like "no pickles" or "extra sauce".
     """
+    session = session_of(tool_context)
     logger.info("add_to_order: %s %s qty=%s notes=%s", item_id, category_id, quantity, special_instructions)
     if quantity < 1:
         return {"error": "Quantity must be at least 1."}
@@ -108,90 +91,90 @@ def add_to_order(item_id: str, category_id: str, quantity: int = 1, special_inst
     menu_item = response.get("Item")
     if not menu_item:
         return {"error": f"Item '{item_id}' not found in category '{category_id}'."}
-    _order_state.add_item(item_id, menu_item.get("name", ""), quantity, int(menu_item.get("price", 0)), special_instructions)
-    summary = _order_state.get_summary()
-    _refresh_order_display()
+    with session.lock:
+        session.order.add_item(
+            item_id, menu_item.get("name", ""), quantity, int(menu_item.get("price", 0)), special_instructions,
+        )
+        _refresh_order_display(session)
+        total = session.order.get_total()
 
     # Return minimal confirmation to keep tool result small for Nova Sonic
     return _sanitize_result({
         "status": "added",
         "item": str(menu_item.get("name", "")),
         "quantity": quantity,
-        "total": summary["total"],
+        "total": total,
     })
 
 
-@tool
-def remove_from_order(item_id: str, quantity: int = 1) -> dict:
+@tool(context=True)
+def remove_from_order(item_id: str, tool_context: ToolContext, quantity: int = 1) -> dict:
     """Removes a menu item from the current order."""
-    if not _order_state.remove_item(item_id, quantity):
-        return {"error": f"Item '{item_id}' is not in the current order."}
-    summary = _order_state.get_summary()
-    _refresh_order_display()
+    session = session_of(tool_context)
+    with session.lock:
+        if not session.order.remove_item(item_id, quantity):
+            return {"error": f"Item '{item_id}' is not in the current order."}
+        _refresh_order_display(session)
+        summary = session.order.get_summary()
     return _sanitize_result({"status": "removed", "item": item_id, "total": summary["total"], "itemCount": len(summary["items"])})
 
 
-@tool
-def get_order_summary(tool_context=None) -> dict:
+@tool(context=True)
+def get_order_summary(tool_context: ToolContext) -> dict:
     """Returns the current order summary."""
-    summary = _order_state.get_summary()
+    summary = session_of(tool_context).order.get_summary()
     items_brief = [f"{i['name']} x{i['quantity']}" for i in summary["items"]]
     return _sanitize_result({"items": items_brief, "total": summary["total"]})
 
 
-@tool
-def place_order() -> dict:
+@tool(context=True)
+def place_order(tool_context: ToolContext) -> dict:
     """Finalizes the order, persists it, and returns the order number to read to the customer."""
-    if _order_state.is_empty():
-        return {"error": "Cannot place an empty order."}
-    summary = _order_state.get_summary()
-    order_record = _order_state.place_order(_session_id)
-    _orders_table.put_item(Item=order_record)
-    logger.info(
-        "ORDER_PLACED: orderId=%s orderNumber=%s sessionId=%s total=%s itemCount=%s",
-        order_record["orderId"],
-        order_record["orderNumber"],
-        order_record["sessionId"],
-        order_record["total"],
-        len(order_record["items"]),
-    )
-    _order_state.cancel()
-
-    # Show the confirmation screen with exactly the order that was just persisted
-    try:
-        current = get_ui_state()
-        current["orderItems"] = summary["items"]
-        current["orderTotal"] = summary["total"]
-        current["orderConfirmed"] = True
-        current["orderNumber"] = order_record["orderNumber"]
-        current["burgerBuilder"] = None
-        current["highlightedItem"] = None
-        current["highlightedCategory"] = None
-        set_ui_state(current)
-    except Exception as e:
-        logger.warning("place_order: failed to update UI: %s", e)
+    session = session_of(tool_context)
+    # Held throughout, so two calls at once can't both place the same order
+    with session.lock:
+        if session.order.is_empty():
+            return {"error": "Cannot place an empty order."}
+        summary = session.order.get_summary()
+        order_record = session.order.place_order(session.session_id)
+        _orders_table.put_item(Item=order_record)
+        logger.info(
+            "ORDER_PLACED: orderId=%s orderNumber=%s sessionId=%s total=%s itemCount=%s",
+            order_record["orderId"],
+            order_record["orderNumber"],
+            order_record["sessionId"],
+            order_record["total"],
+            len(order_record["items"]),
+        )
+        session.order.cancel()
+        session.burger_draft = None
+        # Show the confirmation screen with exactly the order that was just persisted
+        session.update_screen(
+            orderItems=summary["items"], orderTotal=summary["total"], orderConfirmed=True,
+            orderNumber=order_record["orderNumber"], burgerBuilder=None, highlightedItem=None,
+            highlightedCategory=None,
+        )
 
     return _sanitize_result({"status": "confirmed", "orderNumber": order_record["orderNumber"], "total": order_record["total"]})
 
 
-@tool
-def cancel_order(tool_context=None) -> dict:
+@tool(context=True)
+def cancel_order(tool_context: ToolContext) -> dict:
     """Clears all items from the current order."""
-    logger.info("ORDER_CANCELLED: itemCount=%s", len(_order_state.items))
-    _order_state.cancel()
-    _refresh_order_display()
+    session = session_of(tool_context)
+    with session.lock:
+        logger.info("ORDER_CANCELLED: itemCount=%s", len(session.order.items))
+        session.order.cancel()
+        _refresh_order_display(session)
     return _sanitize_result({"status": "cancelled"})
 
 
-# --- Custom Burger Builder ---
-
-# Base price in fils (100 fils = 1 AED), plus per-topping prices.
-# Mirrored in frontend App.tsx / BurgerBuilder.tsx and the system prompt in main.py.
+# --- Build-your-own burger ---
+# Prices in fils (100 fils = 1 AED). Mirrored in frontend App.tsx / BurgerBuilder.tsx and the
+# system prompt in main.py.
 _CUSTOM_BURGER_BASE_PRICE = 3300  # AED 33.00 for patty + bun
+PATTIES = ("beef patty", "chicken patty")
 _TOPPING_PRICES = {
-    # Patty options (included in base)
-    "beef patty": 0,
-    "chicken patty": 0,
     # Cheese (+AED 4.00)
     "american cheese": 400,
     "cheddar cheese": 400,
@@ -208,95 +191,129 @@ _TOPPING_PRICES = {
     "pickles": 0,
     "jalapeños": 0,
     "mushrooms": 0,
-    # Sauces (free)
-    "ketchup": 0,
-    "mustard": 0,
-    "mayo": 0,
-    "bbq sauce": 0,
-    "chipotle mayo": 0,
-    "special sauce": 0,
 }
+TOPPINGS = tuple(_TOPPING_PRICES)
+SAUCES = ("ketchup", "mustard", "mayo", "bbq sauce", "chipotle mayo", "special sauce")  # all free
 
 
 def custom_burger_price(toppings) -> int:
     """Price in fils of a custom burger with the given toppings.
 
-    The single price calculation for custom burgers: used for the builder preview on screen
-    and for the item added to the order. Unknown toppings add nothing; build_custom_burger
-    rejects them before pricing.
+    The single price calculation for custom burgers: used for the builder on screen and for
+    the item added to the order. Unknown toppings add nothing; the tools reject them first.
     """
     return _CUSTOM_BURGER_BASE_PRICE + sum(
         _TOPPING_PRICES.get(str(t).lower().strip(), 0) for t in (toppings or [])
     )
 
 
-@tool
-def build_custom_burger(patty: str, toppings: list, sauces: list = None, quantity: int = 1) -> dict:
-    """Build a custom burger with chosen patty, toppings, and sauces. Adds it to the order.
+def _normalize(names, allowed: tuple, kind: str) -> tuple[list[str], str | None]:
+    """Lower-case and validate names. Returns (names, error message or None)."""
+    result = []
+    for name in names or []:
+        name = str(name).lower().strip()
+        if name not in allowed:
+            return [], f"Unknown {kind} '{name}'. Options: {', '.join(allowed)}."
+        result.append(name)
+    return result, None
+
+
+def _builder_view(draft: dict) -> dict:
+    """The burger builder as the screen shows it, priced by the server."""
+    return {**draft, "active": True, "price": custom_burger_price(draft["toppings"])}
+
+
+@tool(context=True)
+def update_custom_burger(
+    tool_context: ToolContext,
+    patty: str | None = None,
+    add_toppings: list[str] | None = None,
+    remove_toppings: list[str] | None = None,
+    add_sauces: list[str] | None = None,
+    remove_sauces: list[str] | None = None,
+) -> dict:
+    """Start or change the customer's build-your-own burger, which is shown on their screen as it's built.
+
+    Call it with no arguments to start, then each time the customer chooses something, passing
+    only what changed. The burger so far is kept until it is confirmed or cancelled.
 
     Args:
-        patty: The patty type — "beef patty" or "chicken patty".
-        toppings: List of toppings. Options: "american cheese", "cheddar cheese",
-            "pepper jack cheese", "swiss cheese", "bacon", "avocado", "fried egg",
-            "lettuce", "tomato", "onion", "pickles", "jalapeños", "mushrooms".
-        sauces: List of sauces. Options: "ketchup", "mustard", "mayo", "bbq sauce",
-            "chipotle mayo", "special sauce". Defaults to none.
-        quantity: Number of custom burgers (default 1).
+        patty: "beef patty" or "chicken patty".
+        add_toppings: Toppings to add. Cheese (+4 dirhams): "american cheese", "cheddar cheese",
+            "pepper jack cheese", "swiss cheese". Premium (+6 dirhams): "bacon", "avocado", "fried egg".
+            Free: "lettuce", "tomato", "onion", "pickles", "jalapeños", "mushrooms".
+        remove_toppings: Toppings to take off.
+        add_sauces: Sauces to add (all free): "ketchup", "mustard", "mayo", "bbq sauce",
+            "chipotle mayo", "special sauce".
+        remove_sauces: Sauces to take off.
 
     Returns:
-        Summary with the custom burger details, price breakdown, and updated order.
+        The burger so far and its price in fils.
     """
-    if sauces is None:
-        sauces = []
+    session = session_of(tool_context)
+    patties, error = _normalize([patty] if patty else [], PATTIES, "patty")
+    if error:
+        return {"error": error}
+    changes = {}
+    for key, names, allowed, kind in (
+        ("add_toppings", add_toppings, TOPPINGS, "topping"), ("remove_toppings", remove_toppings, TOPPINGS, "topping"),
+        ("add_sauces", add_sauces, SAUCES, "sauce"), ("remove_sauces", remove_sauces, SAUCES, "sauce"),
+    ):
+        changes[key], error = _normalize(names, allowed, kind)
+        if error:
+            return {"error": error}
+
+    with session.lock:
+        draft = session.burger_draft or {"patty": None, "toppings": [], "sauces": []}
+        toppings = [t for t in draft["toppings"] if t not in changes["remove_toppings"]]
+        toppings += [t for t in changes["add_toppings"] if t not in toppings]
+        sauces = [s for s in draft["sauces"] if s not in changes["remove_sauces"]]
+        sauces += [s for s in changes["add_sauces"] if s not in sauces]
+        draft = {"patty": patties[0] if patties else draft["patty"], "toppings": toppings, "sauces": sauces}
+        session.burger_draft = draft
+        view = _builder_view(draft)
+        session.update_screen(burgerBuilder=view, highlightedItem=None)
+
+    logger.info("update_custom_burger: %s", draft)
+    return _sanitize_result({
+        "patty": draft["patty"], "toppings": draft["toppings"], "sauces": draft["sauces"], "price": view["price"],
+    })
+
+
+@tool(context=True)
+def confirm_custom_burger(tool_context: ToolContext, quantity: int = 1) -> dict:
+    """Add the build-your-own burger to the order. Only call it after the customer confirms the burger.
+
+    Args:
+        quantity: Number of these burgers (default 1).
+    """
+    session = session_of(tool_context)
     if quantity < 1:
         return {"error": "Quantity must be at least 1."}
+    with session.lock:
+        draft = session.burger_draft
+        if not draft:
+            return {"error": "There is no custom burger in progress. Start one with update_custom_burger."}
+        if not draft["patty"]:
+            return {"error": "Choose a patty first: beef patty or chicken patty."}
+        description = ", ".join([draft["patty"], *draft["toppings"], *draft["sauces"]])
+        # The same configuration adds to the same line; a different one gets its own line
+        item_id = f"custom-burger-{hashlib.md5(description.encode()).hexdigest()[:6]}"
+        price = custom_burger_price(draft["toppings"])
+        session.order.add_item(item_id, "Custom Burger", quantity, price, description)
+        session.burger_draft = None
+        _refresh_order_display(session, burgerBuilder=None)  # close the builder
+        total = session.order.get_total()
 
-    # Validate patty
-    patty = patty.lower().strip()
-    if patty not in ("beef patty", "chicken patty"):
-        return {"error": f"Invalid patty '{patty}'. Choose 'beef patty' or 'chicken patty'."}
+    logger.info("confirm_custom_burger: %s x%s price=%s", description, quantity, price)
+    return _sanitize_result({"status": "added", "item": "Custom Burger", "quantity": quantity, "price": price, "total": total})
 
-    selected_toppings = []
-    for topping in toppings:
-        topping = topping.lower().strip()
-        if topping not in _TOPPING_PRICES:
-            return {"error": f"Unknown topping '{topping}'. Available: {', '.join(sorted(_TOPPING_PRICES.keys()))}"}
-        selected_toppings.append(topping)
-    total_price = custom_burger_price(selected_toppings)
 
-    selected_sauces = []
-    for sauce in sauces:
-        sauce = sauce.lower().strip()
-        if sauce not in _TOPPING_PRICES:
-            return {"error": f"Unknown sauce '{sauce}'. Available: ketchup, mustard, mayo, bbq sauce, chipotle mayo, special sauce."}
-        selected_sauces.append(sauce)
-
-    # Build description for the order
-    parts = [patty]
-    if selected_toppings:
-        parts.extend(selected_toppings)
-    if selected_sauces:
-        parts.extend(selected_sauces)
-    description = ", ".join(parts)
-
-    # Use a unique item ID for each custom burger configuration
-    import hashlib
-    config_hash = hashlib.md5(description.encode()).hexdigest()[:6]
-    item_id = f"custom-burger-{config_hash}"
-    name = "Custom Burger"
-
-    logger.info("build_custom_burger: %s toppings=%s sauces=%s price=%s", patty, selected_toppings, selected_sauces, total_price)
-
-    _order_state.add_item(item_id, name, quantity, total_price, description)
-    summary = _order_state.get_summary()
-    _refresh_order_display(burgerBuilder=None, highlightedItem=None)  # close the builder
-
-    return _sanitize_result({
-        "status": "added",
-        "item": "Custom Burger",
-        "patty": patty,
-        "toppings": selected_toppings,
-        "sauces": selected_sauces,
-        "price": f"AED {total_price / 100:.2f}",
-        "total": summary["total"],
-    })
+@tool(context=True)
+def cancel_custom_burger(tool_context: ToolContext) -> dict:
+    """Throw away the build-your-own burger in progress and close the builder."""
+    session = session_of(tool_context)
+    with session.lock:
+        session.burger_draft = None
+        session.update_screen(burgerBuilder=None)
+    return {"status": "cancelled"}

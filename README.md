@@ -13,9 +13,10 @@ A voice-powered drive-thru ordering app built with Amazon Nova Sonic, Strands Ag
 ![Architecture Diagram](architecture.png)
 
 **Key design decisions:**
-- **Agent controls the UI** — the agent has a single `update_ui` tool that sets the entire frontend display state. The frontend just renders what it receives.
+- **Voice only, server owns the screen** — customers only talk; the screen only displays. Each conversation's order and screen state live in a server-side session, and every tool that changes the screen sends the new state. The browser only ever sends microphone audio.
+- **Survives dropped connections** — the browser keeps one AgentCore session ID per order and reconnects with it after a drop, which reaches the same session: the order, the screen and the conversation carry on.
 - **No direct AWS calls from browser** — the frontend doesn't talk to DynamoDB or S3 directly. All data flows through the agent via WebSocket.
-- **JSON protocol** — all WebSocket communication is JSON (audio is base64-encoded). Strands BidiAgent handles routing natively.
+- **JSON protocol** — all WebSocket communication is JSON (audio is base64-encoded). Screen messages are shaped like [AG-UI](https://docs.ag-ui.com) events: a `CUSTOM` `menu` event once per connection, a `STATE_SNAPSHOT` with an `epoch` and `version` after every change (the browser ignores out-of-date ones), and a `CUSTOM` `session_ended` event with the reason before the server closes a session.
 - **OAuth auth** — Cognito JWT token via `Sec-WebSocket-Protocol` header for WebSocket authentication.
 
 ## Prerequisites
@@ -101,11 +102,11 @@ aws cognito-idp admin-set-user-password \
 
 1. **Sign in** → Cognito Authenticator handles sign-in and password reset (accounts are created by an admin, see above)
 2. **Start Your Order** → big centered button, connects WebSocket to AgentCore
-3. **Agent loads menu** → calls `load_menu` tool, sends full menu to frontend via `update_ui`
+3. **Server sets up the screen** → sends the menu and screen state, then the agent greets the customer
 4. **Voice conversation** → bidirectional audio streaming with Nova Sonic
-5. **Agent controls the screen** → highlights categories, shows item details, updates order panel
-6. **Build Your Own Burger** → interactive burger builder modal with real-time visual assembly
-7. **Place order** → agent persists to DynamoDB, shows confirmation
+5. **Agent controls the screen** → shows items and categories, updates the order panel
+6. **Build Your Own Burger** → burger builder modal that assembles the burger as the customer chooses
+7. **Place order** → agent persists to DynamoDB and says goodbye; the confirmation shows briefly, then the screen resets for the next car
 
 ## Sample Menu
 
@@ -155,17 +156,19 @@ The CDK tests include regression checks for problems that only appear after depl
 
 | Tool | Purpose |
 |------|---------|
-| `load_menu` | Loads full menu from DynamoDB, sends to frontend |
-| `get_categories` | Returns menu categories |
-| `get_items_by_category` | Returns items in a category |
+| `show_item` | Shows an item's details on screen and returns them |
+| `show_category` | Scrolls the screen to a category and returns its items |
+The menu is in the agent's instructions and on screen from the start, so there is no tool to load it. Only these tools change the screen, and only the server sets prices.
+
 | `get_recommendations` | Returns featured items |
 | `add_to_order` | Adds item with optional special instructions |
-| `build_custom_burger` | Builds a custom burger with chosen patty, toppings, and sauces |
 | `remove_from_order` | Removes item from order |
 | `get_order_summary` | Returns current order |
 | `place_order` | Persists order to DynamoDB |
 | `cancel_order` | Clears the order |
-| `update_ui` | Highlights a category or item, and shows the burger builder (the order, menu and all prices are written only by the tools above) |
+| `update_custom_burger` | Starts or changes the build-your-own burger (patty, toppings, sauces), shown in the builder |
+| `confirm_custom_burger` | Adds the build-your-own burger to the order |
+| `cancel_custom_burger` | Throws the build-your-own burger away |
 | `stop_conversation` | Built-in Strands tool that ends the conversation |
 
 ## Redeploying

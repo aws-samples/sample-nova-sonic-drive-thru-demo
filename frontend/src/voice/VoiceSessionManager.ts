@@ -9,6 +9,18 @@
 
 import type { AgentCoreWebSocketClient, BidiEvent } from './WebSocketClient';
 import { useAppStore } from '../store/appStore';
+import type { MenuData, ScreenState } from '../types';
+
+// Waits before each reconnect attempt after an unexpected drop; then the session is given up.
+const RECONNECT_DELAYS_MS = [250, 1000, 2000, 4000, 8000];
+
+const END_MESSAGES: Record<string, string> = {
+  'order-complete': 'Thank you for your order!',
+  'idle-timeout': 'Your session ended after a period of silence. Start again whenever you are ready.',
+  'conversation-ended': 'Thank you for visiting!',
+  'agent-error': 'Sorry, the voice assistant ran into a problem. Please start again.',
+};
+const DROPPED_MESSAGE = 'The voice session was disconnected. Start again to continue.';
 
 export class VoiceSessionManager {
   private client: AgentCoreWebSocketClient;
@@ -18,26 +30,44 @@ export class VoiceSessionManager {
   private audioQueue: AudioBuffer[] = [];
   private isPlaying = false;
   private active = false;
+  private reconnecting = false;
+  // Reconnect attempts used since the conversation last worked. Only reset once the agent is
+  // heard again, so a connection that opens and then fails straight away can't retry forever.
+  private reconnectAttempts = 0;
   private currentSource: AudioBufferSourceNode | null = null;
   private isSpeaking = false; // true while agent audio is playing
   private endReason: string | null = null; // set when the agent says why it is ending the session
   private onEnded: ((message: string, reason: string | null) => void) | null;
+  // One agent session per order: kept across reconnects so the order survives a dropped connection
+  private sessionId = '';
+  private runtimeArn = '';
+  private region = '';
+  private getToken: () => Promise<string> = async () => '';
 
   /**
    * @param onEnded Called when the session ends without Stop being pressed: with a user-facing
-   *   message, and the agent's reason ('order-complete', 'idle-timeout') or null if the
-   *   connection dropped.
+   *   message, and the agent's reason ('order-complete', 'idle-timeout', 'conversation-ended')
+   *   or null if the connection dropped and could not be restored.
    */
   constructor(client: AgentCoreWebSocketClient, onEnded?: (message: string, reason: string | null) => void) {
     this.client = client;
     this.onEnded = onEnded ?? null;
   }
 
+  /**
+   * @param getToken Returns a current access token; called for every connection, so a
+   *   reconnect late in a long order doesn't use an expired one.
+   */
   async startSession(
     runtimeArn: string,
     region: string,
-    jwtToken: string,
+    getToken: () => Promise<string>,
   ): Promise<void> {
+    this.runtimeArn = runtimeArn;
+    this.region = region;
+    this.getToken = getToken;
+    this.sessionId = crypto.randomUUID();
+
     // 1. Request microphone
     try {
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -53,32 +83,21 @@ export class VoiceSessionManager {
     this.playbackContext = new AudioContext({ sampleRate: 16000 });
     this.client.onEvent((event: BidiEvent) => this.handleEvent(event));
 
-    // The server can close the session (e.g. after a period of silence). Release the mic and
-    // tell the user, rather than showing "Listening…" on a closed socket.
+    // When the agent ends the session (it says why first), release the mic and tell the user.
+    // Any other close is a dropped connection: reconnect to the same session and carry on.
     this.client.onDisconnect(() => {
-      if (!this.active) return; // closed by endSession(), i.e. the user pressed Stop
-      this.endSession();
-      const messages: Record<string, string> = {
-        'order-complete': 'Thank you for your order!',
-        'idle-timeout': 'Your session ended after a period of silence. Start again whenever you are ready.',
-      };
-      this.onEnded?.(
-        messages[this.endReason ?? ''] ?? 'The voice session was disconnected. Start again to continue.',
-        this.endReason,
-      );
+      if (!this.active || this.reconnecting) return; // Stop was pressed, or a retry failed
+      if (this.endReason) {
+        this.finish(END_MESSAGES[this.endReason] ?? DROPPED_MESSAGE, this.endReason);
+      } else {
+        void this.reconnect();
+      }
     });
 
-    // 3. Connect WebSocket
-    await this.client.connect(runtimeArn, region, jwtToken);
+    // 3. Connect WebSocket. The agent sends the menu and screen, then greets the customer.
+    await this.client.connect(runtimeArn, region, await getToken(), this.sessionId);
 
-    // 4. Send initial greeting to trigger the agent
-    this.client.send({
-      type: 'bidi_text_input',
-      text: 'Hello',
-      role: 'user',
-    });
-
-    // 5. Set up audio capture → send as bidi_audio_input JSON events
+    // 4. Set up audio capture → send as bidi_audio_input JSON events
     this.captureContext = new AudioContext({ sampleRate: 16000 });
     const source = this.captureContext.createMediaStreamSource(this.mediaStream);
     const processor = this.captureContext.createScriptProcessor(4096, 1, 1);
@@ -125,7 +144,40 @@ export class VoiceSessionManager {
     useAppStore.getState().setListening(true);
   }
 
+  /** Reconnect to the same agent session after an unexpected drop, keeping the microphone open. */
+  private async reconnect(): Promise<void> {
+    this.reconnecting = true;
+    useAppStore.getState().setReconnecting(true);
+    this.stopPlayback(); // the agent's interrupted reply won't continue
+    while (this.reconnectAttempts < RECONNECT_DELAYS_MS.length) {
+      const delay = RECONNECT_DELAYS_MS[this.reconnectAttempts++];
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      if (!this.active) return; // Stop was pressed meanwhile
+      try {
+        await this.client.connect(this.runtimeArn, this.region, await this.getToken(), this.sessionId);
+        if (!this.active) {
+          this.client.disconnect();
+          return;
+        }
+        console.log('[Voice] Reconnected to session');
+        this.reconnecting = false;
+        useAppStore.getState().setReconnecting(false);
+        return;
+      } catch (err) {
+        console.warn('[Voice] Reconnect attempt failed:', err);
+      }
+    }
+    this.reconnecting = false;
+    this.finish(DROPPED_MESSAGE, null);
+  }
+
+  private finish(message: string, reason: string | null): void {
+    this.endSession();
+    this.onEnded?.(message, reason);
+  }
+
   endSession(): void {
+    this.active = false; // first, so the close below isn't taken for a dropped connection
     if (this.mediaStream) {
       this.mediaStream.getTracks().forEach((t) => t.stop());
       this.mediaStream = null;
@@ -141,7 +193,6 @@ export class VoiceSessionManager {
     this.audioQueue = [];
     this.isPlaying = false;
     this.client.disconnect();
-    this.active = false;
     useAppStore.getState().endVoiceSession();
   }
 
@@ -152,44 +203,58 @@ export class VoiceSessionManager {
   private handleEvent(event: BidiEvent): void {
     switch (event.type) {
       case 'bidi_audio_stream':
+        this.reconnectAttempts = 0; // the conversation is working again
         this.isSpeaking = true;
         this.queueAudio(event.audio as string, (event.sample_rate as number) || 16000);
         break;
 
       case 'bidi_interruption':
         // Stop the currently playing audio immediately
-        this.isSpeaking = false;
-        if (this.currentSource) {
-          this.currentSource.onended = null;
-          this.currentSource.stop();
-          this.currentSource = null;
-        }
-        this.audioQueue = [];
-        this.isPlaying = false;
-        if (this.playbackContext) {
-          this.playbackContext.close().catch(() => {});
-          this.playbackContext = new AudioContext({ sampleRate: 16000 });
-        }
+        this.stopPlayback();
         break;
 
       case 'bidi_transcript_stream':
         break;
 
-      case 'session_ended':
-        // Sent by the agent just before it closes the socket
-        this.endReason = typeof event.reason === 'string' ? event.reason : null;
-        break;
-
-      case 'ui_state_update':
-        // Agent sent the full UI state — apply it directly
-        console.log('[Voice] UI state update received, categories:', (event.state as any)?.categories?.length);
-        if (event.state && typeof event.state === 'object') {
-          useAppStore.getState().applyAgentUIState(event.state as any);
+      case 'STATE_SNAPSHOT': {
+        // Everything on screen apart from the menu, sent whole after every change
+        const { epoch, version, snapshot } = event;
+        if (typeof epoch === 'string' && typeof version === 'number' && snapshot && typeof snapshot === 'object') {
+          if (!useAppStore.getState().applySnapshot(epoch, version, snapshot as ScreenState)) {
+            console.warn('[Voice] Ignored an out-of-date screen snapshot:', version);
+          }
         }
         break;
+      }
+
+      case 'CUSTOM': {
+        const value = event.value as Record<string, unknown> | undefined;
+        if (event.name === 'menu' && value) {
+          useAppStore.getState().applyMenu(value as unknown as MenuData);
+        } else if (event.name === 'session_ended') {
+          // Sent by the agent just before it closes the socket
+          this.endReason = typeof value?.reason === 'string' ? value.reason : null;
+        }
+        break;
+      }
 
       default:
         break;
+    }
+  }
+
+  private stopPlayback(): void {
+    this.isSpeaking = false;
+    if (this.currentSource) {
+      this.currentSource.onended = null;
+      this.currentSource.stop();
+      this.currentSource = null;
+    }
+    this.audioQueue = [];
+    this.isPlaying = false;
+    if (this.playbackContext) {
+      this.playbackContext.close().catch(() => {});
+      this.playbackContext = new AudioContext({ sampleRate: 16000 });
     }
   }
 

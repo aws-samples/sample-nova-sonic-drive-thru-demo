@@ -50,18 +50,22 @@ export interface AgentUIState {
   burgerBuilder: BurgerBuilderState | null;
 }
 
-// The event the agent sends over WebSocket
-export interface UIStateUpdateEvent {
-  type: 'ui_state_update';
-  state: AgentUIState;
-}
+// The menu: sent by the agent once per connection (CUSTOM "menu" event)
+export type MenuData = Pick<AgentUIState, 'categories' | 'menuItems'>;
+
+// Everything else on screen: sent whole after every change (STATE_SNAPSHOT event)
+export type ScreenState = Omit<AgentUIState, 'categories' | 'menuItems'>;
 
 // Full application state
 export interface AppState {
   agentUI: AgentUIState;
+  // Which snapshot the screen shows. A snapshot from the same epoch with a version no newer
+  // than this is out of date and ignored; a new epoch means the agent started a new session.
+  sync: { epoch: string | null; version: number };
   voice: {
     sessionActive: boolean;
     listening: boolean;
+    reconnecting: boolean;
     micPermission: 'granted' | 'denied' | 'prompt';
   };
 }

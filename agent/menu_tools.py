@@ -1,14 +1,18 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Menu browsing tools for the drive-thru voice ordering agent."""
+"""Menu data, and the tools that show parts of the menu on the customer's screen."""
 
-import json
 import os
 from decimal import Decimal
 
 import boto3
-from strands import tool
+from strands import ToolContext, tool
+
+try:
+    from agent.session import session_of
+except ModuleNotFoundError:
+    from session import session_of
 
 
 def _sanitize_result(result: dict) -> dict:
@@ -41,7 +45,7 @@ def get_table():
 
 
 @tool
-def get_categories(tool_context=None) -> dict:
+def get_categories() -> dict:
     """Returns all menu categories."""
     response = get_table().scan(
         FilterExpression="SK = :sk",
@@ -109,7 +113,7 @@ def get_item_details(item_id: str, category_id: str) -> dict:
 
 
 @tool
-def get_recommendations(tool_context=None) -> dict:
+def get_recommendations() -> dict:
     """Returns a list of featured/popular menu items."""
     response = get_table().scan(
         FilterExpression="featured = :f AND begins_with(SK, :sk_prefix)",
@@ -130,3 +134,58 @@ def get_recommendations(tool_context=None) -> dict:
         })
     items.sort(key=lambda i: i["sortOrder"])
     return _sanitize_result({"items": items})
+
+
+def load_menu_data() -> dict:
+    """The whole menu, as the screen shows it: {"categories": [...], "menuItems": {categoryId: [...]}}.
+
+    Loaded once per conversation. The server sends it to the screen and lists it in the
+    agent's instructions, so the agent never has to fetch it.
+    """
+    categories = get_categories()["categories"]
+    menu_items = {}
+    for category in categories:
+        category_id = category["categoryId"]
+        menu_items[category_id] = [
+            {**item, "categoryId": category_id}
+            for item in get_items_by_category(category_id=category_id)["items"]
+        ]
+    return {"categories": categories, "menuItems": menu_items}
+
+
+@tool(context=True)
+def show_item(item_id: str, tool_context: ToolContext) -> dict:
+    """Show a menu item's picture and details on the customer's screen, and return its details.
+
+    Use it when the customer asks about an item, or when you describe or suggest one. When the
+    customer orders an item, just add it to the order instead.
+
+    Args:
+        item_id: The item's exact itemId from the menu, e.g. "classic-burger".
+    """
+    session = session_of(tool_context)
+    item, category_id = session.find_item(item_id)
+    if item is None:
+        return {"error": f"There is no item '{item_id}'. Use an exact itemId from the menu."}
+    # The item's popup replaces the burger builder on screen; the burger draft is kept.
+    session.update_screen(highlightedItem=item_id, highlightedCategory=category_id, burgerBuilder=None)
+    return _sanitize_result({"name": item["name"], "description": item["description"], "price": item["price"]})
+
+
+@tool(context=True)
+def show_category(category_id: str, tool_context: ToolContext) -> dict:
+    """Scroll the customer's screen to a menu category, and return the items in it.
+
+    Use it when the customer asks what's in a category, e.g. "what drinks do you have?".
+
+    Args:
+        category_id: The category's exact categoryId from the menu, e.g. "drinks".
+    """
+    session = session_of(tool_context)
+    items = session.menu.get("menuItems", {}).get(category_id)
+    if items is None:
+        return {"error": f"There is no category '{category_id}'. Use an exact categoryId from the menu."}
+    session.update_screen(highlightedCategory=category_id, highlightedItem=None, burgerBuilder=None)
+    return _sanitize_result({
+        "items": [{"itemId": i["itemId"], "name": i["name"], "price": i["price"]} for i in items],
+    })

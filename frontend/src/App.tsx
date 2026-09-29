@@ -21,6 +21,7 @@ export default function App() {
 
   const sessionActive = useAppStore((s) => s.voice.sessionActive);
   const listening = useAppStore((s) => s.voice.listening);
+  const reconnecting = useAppStore((s) => s.voice.reconnecting);
   const micPermission = useAppStore((s) => s.voice.micPermission);
   const orderConfirmed = useAppStore((s) => s.agentUI.orderConfirmed);
   const hasMenu = useAppStore((s) => s.agentUI.categories.length > 0);
@@ -59,13 +60,16 @@ export default function App() {
     setConnecting(true);
     try {
       const config = getRuntimeConfig();
-      const session = await fetchAuthSession();
-      const token = session.tokens?.accessToken?.toString();
-      if (!token) throw new Error('No access token available');
+      const getToken = async () => {
+        const session = await fetchAuthSession(); // refreshes the token if it has expired
+        const token = session.tokens?.accessToken?.toString();
+        if (!token) throw new Error('No access token available');
+        return token;
+      };
       const client = createWebSocketClient();
       const manager = new VoiceSessionManager(client, handleSessionEnded);
       voiceManagerRef.current = manager;
-      await manager.startSession(config.agentRuntimeArn, config.awsRegion, token);
+      await manager.startSession(config.agentRuntimeArn, config.awsRegion, getToken);
     } catch (err) {
       setVoiceError((err as Error).message);
     } finally {
@@ -146,7 +150,11 @@ export default function App() {
         </div>
       </div>
 
-      {listening && (
+      {reconnecting ? (
+        <div style={{ marginBottom: 12, color: '#e67e22', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+          <span role="status">Reconnecting…</span>
+        </div>
+      ) : listening && (
         <div style={{ marginBottom: 12, color: 'green', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
           <span role="status" aria-label="Listening">🎙️ Listening…</span>
         </div>

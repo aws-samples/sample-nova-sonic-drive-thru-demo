@@ -19,12 +19,19 @@ const burger: MenuItem = {
   sortOrder: 1,
 };
 
+let version = 0;
+
 function highlight(itemId: string | null) {
-  const agentUI = useAppStore.getState().agentUI;
-  useAppStore.getState().applyAgentUIState({
-    ...agentUI,
-    menuItems: { burgers: [burger] },
+  const { applyMenu, applySnapshot, agentUI } = useAppStore.getState();
+  applyMenu({ categories: [], menuItems: { burgers: [burger] } });
+  applySnapshot('test-epoch', ++version, {
+    highlightedCategory: agentUI.highlightedCategory,
     highlightedItem: itemId,
+    orderItems: agentUI.orderItems,
+    orderTotal: agentUI.orderTotal,
+    orderConfirmed: agentUI.orderConfirmed,
+    orderNumber: agentUI.orderNumber,
+    burgerBuilder: agentUI.burgerBuilder,
   });
 }
 

@@ -19,8 +19,7 @@ from hypothesis import strategies as st
 from moto import mock_aws
 
 from agent import order_tools
-from agent.order_state import OrderState
-from agent.ui_state_manager import get_ui_state, reset_ui_state
+from agent.tests.support import context, make_session
 
 CATEGORY = "cat"
 
@@ -69,20 +68,19 @@ def tables():
         yield menu, orders
 
 
-def _start_example(menu_table, menu):
-    """Seed this example's menu and start from an empty order and screen."""
+def _start_example(menu_table, menu, session_id="prop-session"):
+    """Seed this example's menu and return a new session: an empty order and screen."""
     for item in menu:
         menu_table.put_item(Item={
             "PK": f"CATEGORY#{CATEGORY}", "SK": f"ITEM#{item['item_id']}",
             "name": item["name"], "price": item["price"],
         })
-    order_tools.set_order_state(OrderState())
-    reset_ui_state()
+    return make_session(session_id=session_id)
 
 
-def _assert_screen_matches(expected_quantities, prices):
-    ui = get_ui_state()
-    summary = order_tools.get_order_state().get_summary()
+def _assert_screen_matches(session, expected_quantities, prices):
+    ui = session.screen
+    summary = session.order.get_summary()
     assert ui["orderItems"] == summary["items"]
     assert {i["itemId"]: i["quantity"] for i in ui["orderItems"]} == expected_quantities
     assert ui["orderTotal"] == sum(qty * prices[item_id] for item_id, qty in expected_quantities.items())
@@ -93,17 +91,18 @@ def _assert_screen_matches(expected_quantities, prices):
 def test_screen_always_shows_the_real_order(tables, menu, ops) -> None:
     """After every add, remove or cancel, the screen shows exactly the order state."""
     menu_table, _ = tables
-    _start_example(menu_table, menu)
+    session = _start_example(menu_table, menu)
+    ctx = context(session)
     prices = {item["item_id"]: item["price"] for item in menu}
     expected: dict[str, int] = {}  # independent model of the order: itemId -> quantity
 
     for op, index, qty in ops:
         item_id = menu[index % len(menu)]["item_id"]
         if op == "add":
-            order_tools.add_to_order(item_id=item_id, category_id=CATEGORY, quantity=qty)
+            order_tools.add_to_order(item_id=item_id, category_id=CATEGORY, quantity=qty, tool_context=ctx)
             expected[item_id] = expected.get(item_id, 0) + qty
         elif op == "remove":
-            result = order_tools.remove_from_order(item_id=item_id, quantity=qty)
+            result = order_tools.remove_from_order(item_id=item_id, quantity=qty, tool_context=ctx)
             if item_id in expected:
                 expected[item_id] -= qty
                 if expected[item_id] <= 0:
@@ -111,9 +110,9 @@ def test_screen_always_shows_the_real_order(tables, menu, ops) -> None:
             else:
                 assert "error" in result
         else:
-            order_tools.cancel_order()
+            order_tools.cancel_order(tool_context=ctx)
             expected.clear()
-        _assert_screen_matches(expected, prices)
+        _assert_screen_matches(session, expected, prices)
 
 
 @settings(max_examples=100, deadline=None)
@@ -125,18 +124,18 @@ def test_placing_an_order_never_overwrites_another(tables, menu, quantity, sessi
     fails if the spoken number is ever used as the record key again.
     """
     menu_table, orders_table = tables
-    _start_example(menu_table, menu)
+    session = _start_example(menu_table, menu, session_id)
+    ctx = context(session)
     target = menu[0]
-    order_tools.add_to_order(item_id=target["item_id"], category_id=CATEGORY, quantity=quantity)
+    order_tools.add_to_order(item_id=target["item_id"], category_id=CATEGORY, quantity=quantity, tool_context=ctx)
     before = orders_table.scan(Select="COUNT")["Count"]
 
-    order_tools.set_session_id(session_id)
-    result = order_tools.place_order()
+    result = order_tools.place_order(tool_context=ctx)
 
     assert orders_table.scan(Select="COUNT")["Count"] == before + 1
     assert result["orderNumber"].isdigit() and len(result["orderNumber"]) == 3
     assert result["total"] == quantity * target["price"]
-    ui = get_ui_state()
+    ui = session.screen
     assert ui["orderConfirmed"] is True
     assert ui["orderNumber"] == result["orderNumber"]
     assert [(i["itemId"], i["quantity"]) for i in ui["orderItems"]] == [(target["item_id"], quantity)]

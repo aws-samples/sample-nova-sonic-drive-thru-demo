@@ -1,2 +1,3 @@
 # Test-only dependencies (pytest and hypothesis are already in requirements.txt).
 moto==5.2.2
+httpx==0.28.1  # FastAPI's TestClient, for the /ws handler tests

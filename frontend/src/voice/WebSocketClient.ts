@@ -14,7 +14,12 @@ export interface BidiEvent {
 }
 
 export interface AgentCoreWebSocketClient {
-  connect(runtimeArn: string, region: string, jwtToken: string): Promise<void>;
+  /**
+   * Open a connection. Reusing a sessionId reaches the same agent session (AgentCore routes
+   * each runtime session ID to the same microVM), which is how a dropped connection resumes.
+   * AgentCore requires session IDs of at least 33 characters; a UUID has 36.
+   */
+  connect(runtimeArn: string, region: string, jwtToken: string, sessionId: string): Promise<void>;
   disconnect(): void;
   send(event: BidiEvent): void;
   onEvent(callback: (event: BidiEvent) => void): void;
@@ -29,12 +34,11 @@ export function createWebSocketClient(): AgentCoreWebSocketClient {
   const disconnectCallbacks: Array<() => void> = [];
 
   return {
-    async connect(runtimeArn, region, jwtToken) {
+    async connect(runtimeArn, region, jwtToken, sessionId) {
       state = 'connecting';
 
       const encodedArn = encodeURIComponent(runtimeArn);
-      const sessionId = crypto.randomUUID();
-      const url = `wss://bedrock-agentcore.${region}.amazonaws.com/runtimes/${encodedArn}/ws?qualifier=DEFAULT&X-Amzn-Bedrock-AgentCore-Runtime-Session-Id=${sessionId}`;
+      const url = `wss://bedrock-agentcore.${region}.amazonaws.com/runtimes/${encodedArn}/ws?qualifier=DEFAULT&X-Amzn-Bedrock-AgentCore-Runtime-Session-Id=${encodeURIComponent(sessionId)}`;
 
       // OAuth via Sec-WebSocket-Protocol: base64url-encode the token
       const base64url = btoa(jwtToken)
@@ -49,30 +53,37 @@ export function createWebSocketClient(): AgentCoreWebSocketClient {
       console.log('[WS] Connecting to:', url.substring(0, 120) + '...');
 
       return new Promise<void>((resolve, reject) => {
-        ws = new WebSocket(url, protocols);
+        const socket = new WebSocket(url, protocols);
+        ws = socket;
+        // Events from a socket this client has since replaced or dropped are ignored.
+        const current = () => ws === socket;
 
-        ws.onopen = () => {
+        socket.onopen = () => {
+          if (!current()) return;
           console.log('[WS] Connected');
           state = 'connected';
           resolve();
         };
 
-        ws.onerror = (event) => {
+        socket.onerror = (event) => {
           console.error('[WS] Error:', event);
+          if (!current()) return;
           state = 'disconnected';
           reject(new Error('WebSocket connection failed'));
         };
 
-        ws.onclose = (event) => {
+        socket.onclose = (event) => {
           console.log('[WS] Closed:', event.code, event.reason, 'clean:', event.wasClean);
+          if (!current()) return;
           state = 'disconnected';
+          reject(new Error('WebSocket closed before it opened')); // no-op once opened
           for (const cb of disconnectCallbacks) cb();
         };
 
-        ws.onmessage = (msg) => {
+        socket.onmessage = (msg) => {
+          if (!current()) return;
           try {
             const event = JSON.parse(msg.data) as BidiEvent;
-            console.log('[WS] Event:', event.type);
             for (const cb of eventCallbacks) cb(event);
           } catch { /* ignore non-JSON */ }
         };
@@ -80,15 +91,16 @@ export function createWebSocketClient(): AgentCoreWebSocketClient {
     },
 
     disconnect() {
-      if (ws) {
-        ws.close();
-        ws = null;
-      }
+      const socket = ws;
+      ws = null;
       state = 'disconnected';
+      socket?.close();
     },
 
     send(event) {
-      if (ws && state === 'connected') {
+      // readyState, not our own state: it turns CLOSING as soon as the server starts closing,
+      // before onclose runs, and sending then only logs browser errors.
+      if (ws && state === 'connected' && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(event));
       }
     },
