@@ -117,8 +117,8 @@ def test_screen_always_shows_the_real_order(tables, menu, ops) -> None:
 
 
 @settings(max_examples=100, deadline=None)
-@given(menu=menus, quantity=st.integers(min_value=1, max_value=5), user_id=st.text(min_size=1, max_size=50))
-def test_placing_an_order_never_overwrites_another(tables, menu, quantity, user_id) -> None:
+@given(menu=menus, quantity=st.integers(min_value=1, max_value=5), session_id=st.text(min_size=1, max_size=50))
+def test_placing_an_order_never_overwrites_another(tables, menu, quantity, session_id) -> None:
     """Every placed order adds exactly one record, and the confirmation shows what was placed.
 
     Across 100 examples the 3-digit spoken order numbers repeat many times, so this
@@ -130,7 +130,8 @@ def test_placing_an_order_never_overwrites_another(tables, menu, quantity, user_
     order_tools.add_to_order(item_id=target["item_id"], category_id=CATEGORY, quantity=quantity)
     before = orders_table.scan(Select="COUNT")["Count"]
 
-    result = order_tools.place_order(user_id=user_id)
+    order_tools.set_session_id(session_id)
+    result = order_tools.place_order()
 
     assert orders_table.scan(Select="COUNT")["Count"] == before + 1
     assert result["orderNumber"].isdigit() and len(result["orderNumber"]) == 3

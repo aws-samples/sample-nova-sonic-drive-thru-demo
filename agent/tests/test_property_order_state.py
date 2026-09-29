@@ -227,7 +227,7 @@ def non_empty_order_state(draw: st.DrawFn):
 def test_place_order_produces_complete_order_record(
     state: OrderState, user_id: str
 ) -> None:
-    """place_order returns a record with UUID, items, total, userId, timestamp, and status.
+    """place_order returns a record with UUID, items, total, sessionId, timestamp, and status.
 
     **Validates: Requirements 6.1, 6.3**
     """
@@ -258,8 +258,8 @@ def test_place_order_produces_complete_order_record(
     # 3. Total matches sum of quantity * unitPrice
     assert record["total"] == expected_total
 
-    # 4. userId matches input
-    assert record["userId"] == user_id
+    # 4. sessionId records the voice session the order came from
+    assert record["sessionId"] == user_id
 
     # 5. Valid ISO 8601 timestamp
     assert record["createdAt"]

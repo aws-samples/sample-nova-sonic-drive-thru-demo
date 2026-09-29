@@ -47,6 +47,7 @@ _dynamodb = boto3.resource("dynamodb", region_name=_REGION)
 _menu_table = _dynamodb.Table(os.environ.get("MENU_TABLE_NAME", "DriveThruMenu"))
 _orders_table = _dynamodb.Table(os.environ.get("ORDERS_TABLE_NAME", "DriveThruOrders"))
 _order_state = OrderState()
+_session_id = "local"  # replaced per connection by main.voice_chat
 
 
 def set_tables(menu_table, orders_table) -> None:
@@ -64,17 +65,26 @@ def get_order_state() -> OrderState:
     return _order_state
 
 
+def set_session_id(session_id: str) -> None:
+    """Record which voice session orders are taken in (stored on each placed order)."""
+    global _session_id
+    _session_id = session_id
+
+
 def _refresh_order_display(**extra_ui_fields) -> None:
     """Show the current order on the customer's screen.
 
     The order state is the only source for the order items and total on screen. Every tool
     that changes the order calls this, so the display can never drift from what gets placed.
+    It also closes any item popup: the screen is voice-driven, so nobody else will close it,
+    and once the order changes the customer has moved on from that item.
     """
     try:
         summary = _order_state.get_summary()
         current = get_ui_state()
         current["orderItems"] = summary["items"]
         current["orderTotal"] = summary["total"]
+        current["highlightedItem"] = None
         current.update(extra_ui_fields)
         set_ui_state(current)
     except Exception as e:
@@ -100,7 +110,7 @@ def add_to_order(item_id: str, category_id: str, quantity: int = 1, special_inst
         return {"error": f"Item '{item_id}' not found in category '{category_id}'."}
     _order_state.add_item(item_id, menu_item.get("name", ""), quantity, int(menu_item.get("price", 0)), special_instructions)
     summary = _order_state.get_summary()
-    _refresh_order_display()  # don't highlight the item — that opens the details modal
+    _refresh_order_display()
 
     # Return minimal confirmation to keep tool result small for Nova Sonic
     return _sanitize_result({
@@ -130,22 +140,18 @@ def get_order_summary(tool_context=None) -> dict:
 
 
 @tool
-def place_order(user_id: str = "guest") -> dict:
-    """Finalizes the order, persists to DynamoDB, returns order number.
-    
-    Args:
-        user_id: The customer identifier. Defaults to "guest".
-    """
+def place_order() -> dict:
+    """Finalizes the order, persists it, and returns the order number to read to the customer."""
     if _order_state.is_empty():
         return {"error": "Cannot place an empty order."}
     summary = _order_state.get_summary()
-    order_record = _order_state.place_order(user_id)
+    order_record = _order_state.place_order(_session_id)
     _orders_table.put_item(Item=order_record)
     logger.info(
-        "ORDER_PLACED: orderId=%s orderNumber=%s userId=%s total=%s itemCount=%s",
+        "ORDER_PLACED: orderId=%s orderNumber=%s sessionId=%s total=%s itemCount=%s",
         order_record["orderId"],
         order_record["orderNumber"],
-        order_record["userId"],
+        order_record["sessionId"],
         order_record["total"],
         len(order_record["items"]),
     )

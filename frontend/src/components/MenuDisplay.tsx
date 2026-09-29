@@ -3,13 +3,8 @@
 
 import { useAppStore } from '../store';
 import { CategoryList } from './CategoryList';
-import type { MenuItem } from '../types';
 
-interface MenuDisplayProps {
-  onItemClick?: (item: MenuItem) => void;
-}
-
-export function MenuDisplay({ onItemClick }: MenuDisplayProps) {
+export function MenuDisplay() {
   const { categories, menuItems, highlightedCategory, highlightedItem } = useAppStore((s) => s.agentUI);
 
   if (categories.length === 0) {
@@ -26,7 +21,6 @@ export function MenuDisplay({ onItemClick }: MenuDisplayProps) {
         items={menuItems}
         highlightedCategory={highlightedCategory}
         highlightedItem={highlightedItem}
-        onItemClick={onItemClick}
       />
     </div>
   );

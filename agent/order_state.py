@@ -125,15 +125,17 @@ class OrderState:
             "total": self.get_total(),
         }
 
-    def place_order(self, user_id: str) -> dict:
+    def place_order(self, session_id: str) -> dict:
         """Generate a complete order record for persistence.
 
         Args:
-            user_id: The authenticated user's identifier.
+            session_id: The voice session the order was taken in (the AgentCore runtime
+                session), which ties the record to that conversation and its logs. Drive-thru
+                customers don't sign in, so there is no customer identity to record.
 
         Returns:
             Dict with orderId (UUID, the database key), orderNumber (short number the
-            agent says aloud and the screen shows), userId, items, total, status, and createdAt.
+            agent says aloud and the screen shows), sessionId, items, total, status, and createdAt.
         """
         import random
         return {
@@ -141,7 +143,7 @@ class OrderState:
             "orderId": str(uuid.uuid4()),
             # Short and easy to say. It repeats across orders by design, so it is never a key.
             "orderNumber": f"{random.randint(100, 999)}",
-            "userId": user_id,
+            "sessionId": session_id,
             "items": [
                 {
                     "itemId": item.item_id,

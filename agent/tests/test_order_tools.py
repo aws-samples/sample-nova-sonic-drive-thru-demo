@@ -15,7 +15,7 @@ from moto import mock_aws
 
 from agent import order_tools
 from agent.order_state import OrderState
-from agent.ui_state_manager import get_ui_state, reset_ui_state
+from agent.ui_state_manager import get_ui_state, reset_ui_state, set_ui_state
 
 CLASSIC_PRICE = 2900  # fils
 COLA_PRICE = 900
@@ -132,8 +132,9 @@ class TestGetOrderSummary:
 class TestPlaceOrder:
     def test_place_order_persists_under_a_uuid(self, dynamodb_tables):
         _, orders_table = dynamodb_tables
+        order_tools.set_session_id("session-abc")
         order_tools.add_to_order(item_id="classic", category_id="burgers", quantity=1)
-        result = order_tools.place_order(user_id="user-123")
+        result = order_tools.place_order()
 
         assert result["status"] == "confirmed"
         assert result["total"] == CLASSIC_PRICE
@@ -141,11 +142,15 @@ class TestPlaceOrder:
         [record] = orders_table.scan()["Items"]
         uuid.UUID(record["orderId"])  # the key is a UUID, not the spoken number
         assert record["orderNumber"] == result["orderNumber"]
-        assert record["userId"] == "user-123"
+        assert record["sessionId"] == "session-abc"
+
+    def test_model_cannot_supply_who_placed_the_order(self):
+        """The model used to fill in user_id and invented values like 'user123'."""
+        assert order_tools.place_order.tool_spec["inputSchema"]["json"]["properties"] == {}
 
     def test_confirmation_screen_shows_the_placed_order(self, dynamodb_tables):
         order_tools.add_to_order(item_id="classic", category_id="burgers", quantity=1)
-        result = order_tools.place_order(user_id="user-123")
+        result = order_tools.place_order()
         ui = get_ui_state()
         assert ui["orderConfirmed"] is True
         assert ui["orderNumber"] == result["orderNumber"]
@@ -156,16 +161,49 @@ class TestPlaceOrder:
         monkeypatch.setattr("random.randint", lambda a, b: 427)  # every order gets number 427
         for _ in range(2):
             order_tools.add_to_order(item_id="classic", category_id="burgers", quantity=1)
-            order_tools.place_order(user_id="user-123")
+            order_tools.place_order()
         assert orders_table.scan()["Count"] == 2
 
     def test_place_empty_order_fails(self, dynamodb_tables):
-        assert "error" in order_tools.place_order(user_id="user-123")
+        assert "error" in order_tools.place_order()
 
     def test_place_order_clears_state(self, dynamodb_tables):
         order_tools.add_to_order(item_id="classic", category_id="burgers", quantity=1)
-        order_tools.place_order(user_id="user-123")
+        order_tools.place_order()
         assert order_tools.get_order_summary() == {"items": [], "total": 0}
+
+
+class TestItemPopupLifecycle:
+    """The screen is voice-driven: nobody can tap a popup closed, so the server closes it."""
+
+    def _show(self, item_id):
+        """Have the agent show an item's popup (on a screen that has a menu loaded)."""
+        from agent import main
+
+        set_ui_state({"categories": [{"categoryId": "burgers", "name": "Burgers", "sortOrder": 1}]})
+        main.update_ui(highlighted_item=item_id)
+        assert get_ui_state()["highlightedItem"] == item_id
+
+    def test_ordering_closes_the_item_popup(self, dynamodb_tables):
+        self._show("classic")
+        order_tools.add_to_order(item_id="classic", category_id="burgers", quantity=1)
+        assert get_ui_state()["highlightedItem"] is None
+
+    def test_removing_and_cancelling_close_the_item_popup(self, dynamodb_tables):
+        order_tools.add_to_order(item_id="classic", category_id="burgers", quantity=2)
+        self._show("cola")
+        order_tools.remove_from_order(item_id="classic", quantity=1)
+        assert get_ui_state()["highlightedItem"] is None
+        self._show("cola")
+        order_tools.cancel_order()
+        assert get_ui_state()["highlightedItem"] is None
+
+    def test_opening_the_builder_closes_the_item_popup(self, dynamodb_tables):
+        from agent import main
+
+        self._show("classic")
+        main.update_ui(burger_builder={"active": True, "patty": None, "toppings": [], "sauces": []})
+        assert get_ui_state()["highlightedItem"] is None
 
 
 class TestCancelOrder:

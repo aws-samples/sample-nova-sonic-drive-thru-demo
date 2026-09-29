@@ -10,7 +10,6 @@ interface CategoryListProps {
   items: Record<string, MenuItem[]>;
   highlightedCategory: string | null;
   highlightedItem: string | null;
-  onItemClick?: (item: MenuItem) => void;
 }
 
 export function CategoryList({
@@ -18,7 +17,6 @@ export function CategoryList({
   items,
   highlightedCategory,
   highlightedItem,
-  onItemClick,
 }: CategoryListProps) {
   const categoryRefs = useRef<Record<string, HTMLElement | null>>({});
 
@@ -68,7 +66,6 @@ export function CategoryList({
                   key={item.itemId}
                   item={item}
                   highlighted={highlightedItem === item.itemId}
-                  onClick={onItemClick}
                 />
               ))}
             </div>

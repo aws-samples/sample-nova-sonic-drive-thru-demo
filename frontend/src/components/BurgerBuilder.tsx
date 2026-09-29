@@ -52,10 +52,6 @@ export function BurgerBuilder() {
         backgroundColor: 'rgba(0,0,0,0.6)',
         backdropFilter: 'blur(4px)',
       }}
-      onClick={() => useAppStore.getState().applyAgentUIState({
-        ...useAppStore.getState().agentUI,
-        burgerBuilder: null,
-      })}
     >
       <div
         style={{
@@ -65,7 +61,6 @@ export function BurgerBuilder() {
           boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
           display: 'flex', flexDirection: 'column',
         }}
-        onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div style={{

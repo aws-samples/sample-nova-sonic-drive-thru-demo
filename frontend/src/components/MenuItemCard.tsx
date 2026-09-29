@@ -7,27 +7,17 @@ import { formatPrice } from '../utils/formatPrice';
 interface MenuItemCardProps {
   item: MenuItem;
   highlighted?: boolean;
-  onClick?: (item: MenuItem) => void;
 }
 
-export function MenuItemCard({ item, highlighted = false, onClick }: MenuItemCardProps) {
+/** A display-only menu card: ordering is purely by voice, so the card is not interactive. */
+export function MenuItemCard({ item, highlighted = false }: MenuItemCardProps) {
   return (
     <article
       className={`menu-item-card${highlighted ? ' menu-item-card--highlighted' : ''}`}
-      onClick={() => onClick?.(item)}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onClick?.(item);
-        }
-      }}
       style={{
         border: highlighted ? '2px solid #e67e22' : '1px solid #ddd',
         borderRadius: '8px',
         padding: '12px',
-        cursor: 'pointer',
         backgroundColor: highlighted ? '#fef9e7' : '#fff',
         display: 'flex',
         flexDirection: 'column',

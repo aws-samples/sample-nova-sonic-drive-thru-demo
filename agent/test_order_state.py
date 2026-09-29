@@ -120,8 +120,8 @@ class TestOrderStatePlaceOrder:
     def test_place_order_structure(self):
         state = OrderState()
         state.add_item("burger-1", "Cheeseburger", 1, 599)
-        record = state.place_order("user-123")
-        assert record["userId"] == "user-123"
+        record = state.place_order("session-123")
+        assert record["sessionId"] == "session-123"
         assert record["status"] == "confirmed"
         assert record["total"] == 599
         assert len(record["items"]) == 1

@@ -56,17 +56,6 @@ export interface UIStateUpdateEvent {
   state: AgentUIState;
 }
 
-// Legacy UI_Event types kept for backward compat (can be removed later)
-export type UIEvent = UIStateUpdateEvent;
-
-// Frontend -> Agent
-export interface UIState {
-  visibleCategory: string | null;
-  selectedItem: string | null;
-  orderItems: OrderItem[];
-  orderTotal: number;
-}
-
 // Full application state
 export interface AppState {
   agentUI: AgentUIState;

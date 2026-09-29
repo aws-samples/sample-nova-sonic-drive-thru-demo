@@ -166,7 +166,7 @@ The CDK tests include regression checks for problems that only appear after depl
 | `place_order` | Persists order to DynamoDB |
 | `cancel_order` | Clears the order |
 | `update_ui` | Highlights a category or item, and shows the burger builder (the order, menu and all prices are written only by the tools above) |
-| `get_ui_context` | Returns what the customer is looking at |
+| `stop_conversation` | Built-in Strands tool that ends the conversation |
 
 ## Redeploying
 

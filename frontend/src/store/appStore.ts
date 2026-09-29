@@ -10,6 +10,8 @@ interface AppActions {
   setListening: (listening: boolean) => void;
   setMicPermission: (permission: 'granted' | 'denied' | 'prompt') => void;
   endVoiceSession: () => void;
+  /** Back to the welcome screen for the next customer. */
+  resetAgentUI: () => void;
 }
 
 const initialAgentUI: AgentUIState = {
@@ -50,4 +52,7 @@ export const useAppStore = create<AppState & AppActions>()((set) => ({
 
   endVoiceSession: () =>
     set((s) => ({ voice: { ...s.voice, sessionActive: false, listening: false } })),
+
+  resetAgentUI: () =>
+    set(() => ({ agentUI: initialAgentUI })),
 }));

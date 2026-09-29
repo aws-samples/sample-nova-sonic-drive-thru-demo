@@ -21,13 +21,14 @@ export class VoiceSessionManager {
   private currentSource: AudioBufferSourceNode | null = null;
   private isSpeaking = false; // true while agent audio is playing
   private endReason: string | null = null; // set when the agent says why it is ending the session
-  private onEnded: ((message: string) => void) | null;
+  private onEnded: ((message: string, reason: string | null) => void) | null;
 
   /**
-   * @param onEnded Called with a user-facing message when the session ends without the user
-   *   pressing Stop (the agent ended it, or the connection dropped).
+   * @param onEnded Called when the session ends without Stop being pressed: with a user-facing
+   *   message, and the agent's reason ('order-complete', 'idle-timeout') or null if the
+   *   connection dropped.
    */
-  constructor(client: AgentCoreWebSocketClient, onEnded?: (message: string) => void) {
+  constructor(client: AgentCoreWebSocketClient, onEnded?: (message: string, reason: string | null) => void) {
     this.client = client;
     this.onEnded = onEnded ?? null;
   }
@@ -57,10 +58,13 @@ export class VoiceSessionManager {
     this.client.onDisconnect(() => {
       if (!this.active) return; // closed by endSession(), i.e. the user pressed Stop
       this.endSession();
+      const messages: Record<string, string> = {
+        'order-complete': 'Thank you for your order!',
+        'idle-timeout': 'Your session ended after a period of silence. Start again whenever you are ready.',
+      };
       this.onEnded?.(
-        this.endReason === 'idle-timeout'
-          ? 'Your session ended after a period of silence. Start again whenever you are ready.'
-          : 'The voice session was disconnected. Start again to continue.',
+        messages[this.endReason ?? ''] ?? 'The voice session was disconnected. Start again to continue.',
+        this.endReason,
       );
     });
 

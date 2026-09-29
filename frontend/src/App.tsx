@@ -8,11 +8,13 @@ import { MenuDisplay, OrderSummaryPanel, OrderConfirmation, ItemDetailModal, Bur
 import { useAppStore } from './store';
 import { createWebSocketClient, VoiceSessionManager } from './voice';
 import { getRuntimeConfig } from './config';
-import type { MenuItem } from './types';
 import { formatPrice } from './utils/formatPrice';
 
 // Build-your-own base price in fils (100 fils = 1 AED); mirrors agent/order_tools.py.
 const CUSTOM_BURGER_BASE_PRICE = 3300;
+// How long the confirmation stays up after the agent ends a completed order, before the
+// screen returns to the welcome state for the next car.
+const CONFIRMATION_DISPLAY_MS = 8000;
 
 export default function App() {
   const { signOut } = useAuthenticator();
@@ -26,13 +28,34 @@ export default function App() {
   const debugMode = new URLSearchParams(window.location.search).has('debug');
 
   const voiceManagerRef = useRef<VoiceSessionManager | null>(null);
+  const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
 
+  // The agent ended the session. A completed order stays on screen briefly; a customer who
+  // went quiet (drove off) gets the welcome screen straight away. Either way the next car
+  // starts from a clean screen.
+  const handleSessionEnded = useCallback((message: string, reason: string | null) => {
+    voiceManagerRef.current = null;
+    if (reason === 'order-complete') {
+      resetTimerRef.current = setTimeout(() => useAppStore.getState().resetAgentUI(), CONFIRMATION_DISPLAY_MS);
+    } else if (reason === 'idle-timeout') {
+      useAppStore.getState().resetAgentUI();
+      setVoiceNotice(message);
+    } else {
+      setVoiceNotice(message);
+    }
+  }, []);
+
   const handleStartVoice = useCallback(async () => {
     setVoiceError(null);
     setVoiceNotice(null);
+    if (resetTimerRef.current) {
+      clearTimeout(resetTimerRef.current);
+      resetTimerRef.current = null;
+    }
+    useAppStore.getState().resetAgentUI(); // a new session is a new order
     setConnecting(true);
     try {
       const config = getRuntimeConfig();
@@ -40,10 +63,7 @@ export default function App() {
       const token = session.tokens?.accessToken?.toString();
       if (!token) throw new Error('No access token available');
       const client = createWebSocketClient();
-      const manager = new VoiceSessionManager(client, (message) => {
-        voiceManagerRef.current = null;
-        setVoiceNotice(message);
-      });
+      const manager = new VoiceSessionManager(client, handleSessionEnded);
       voiceManagerRef.current = manager;
       await manager.startSession(config.agentRuntimeArn, config.awsRegion, token);
     } catch (err) {
@@ -51,21 +71,13 @@ export default function App() {
     } finally {
       setConnecting(false);
     }
-  }, []);
+  }, [handleSessionEnded]);
 
   const handleStopVoice = useCallback(() => {
     if (voiceManagerRef.current) {
       voiceManagerRef.current.endSession();
       voiceManagerRef.current = null;
     }
-  }, []);
-
-  const handleItemClick = useCallback((item: MenuItem) => {
-    const current = useAppStore.getState().agentUI;
-    useAppStore.getState().applyAgentUIState({
-      ...current,
-      highlightedItem: item.itemId,
-    });
   }, []);
 
   // Order confirmed screen
@@ -146,36 +158,25 @@ export default function App() {
         {/* Build Your Own — left sidebar (only show when menu is loaded) */}
         {hasMenu && (
         <div style={{ width: 180, flexShrink: 0, position: 'sticky', top: 16 }}>
+          {/* Display only: the customer asks for a custom burger by voice */}
           <div
-            onClick={() => {
-              useAppStore.getState().applyAgentUIState({
-                ...useAppStore.getState().agentUI,
-                burgerBuilder: { active: true, patty: null, toppings: [], sauces: [], price: CUSTOM_BURGER_BASE_PRICE },
-              });
-            }}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.currentTarget.click(); }}
             style={{
-              cursor: 'pointer',
               background: '#fff',
               border: '1px solid #eee',
               borderRadius: 12,
               padding: '14px 16px',
               textAlign: 'center',
-              transition: 'transform 0.2s, box-shadow 0.2s',
             }}
-            onMouseEnter={(e) => { e.currentTarget.style.transform = 'scale(1.02)'; e.currentTarget.style.boxShadow = '0 4px 16px rgba(0,0,0,0.08)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.boxShadow = 'none'; }}
           >
             <div style={{ fontWeight: 600, fontSize: '0.9em', color: '#333' }}>or Build Your Own Burger</div>
             <div style={{ marginTop: 6, fontSize: '0.75em', color: '#27ae60', fontWeight: 600 }}>From {formatPrice(CUSTOM_BURGER_BASE_PRICE)}</div>
+            <div style={{ marginTop: 6, fontSize: '0.7em', color: '#888' }}>Just ask to build your own</div>
           </div>
         </div>
         )}
 
         {/* Menu */}
-        <div style={{ flex: 2 }}><MenuDisplay onItemClick={handleItemClick} /></div>
+        <div style={{ flex: 2 }}><MenuDisplay /></div>
 
         {/* Order summary */}
         <div style={{ flex: 1, position: 'sticky', top: 16, maxHeight: 'calc(100vh - 32px)', overflowY: 'auto' }}>

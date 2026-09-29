@@ -1,8 +1,8 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect } from 'vitest';
+import { render, screen } from '@testing-library/react';
 import { MenuItemCard } from './MenuItemCard';
 import type { MenuItem } from '../types';
 
@@ -51,25 +51,8 @@ describe('MenuItemCard', () => {
     expect(card).not.toBeInTheDocument();
   });
 
-  it('calls onClick with the item when clicked', () => {
-    const handleClick = vi.fn();
-    render(<MenuItemCard item={sampleItem} onClick={handleClick} />);
-
-    fireEvent.click(screen.getByRole('button'));
-    expect(handleClick).toHaveBeenCalledWith(sampleItem);
-  });
-
-  it('calls onClick on Enter key press', () => {
-    const handleClick = vi.fn();
-    render(<MenuItemCard item={sampleItem} onClick={handleClick} />);
-
-    fireEvent.keyDown(screen.getByRole('button'), { key: 'Enter' });
-    expect(handleClick).toHaveBeenCalledWith(sampleItem);
-  });
-
-  it('renders without onClick without crashing', () => {
+  it('is display-only: ordering is by voice, so the card is not a control', () => {
     render(<MenuItemCard item={sampleItem} />);
-    fireEvent.click(screen.getByRole('button'));
-    // no error thrown
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 });

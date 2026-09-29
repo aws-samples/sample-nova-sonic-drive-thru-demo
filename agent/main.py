@@ -10,6 +10,7 @@ Every visual change goes through update_ui — the frontend just renders what it
 import logging
 import os
 import time
+import uuid
 from collections import defaultdict
 from datetime import datetime
 
@@ -40,6 +41,10 @@ MAX_WS_MESSAGE_BYTES = 64 * 1024
 IDLE_TIMEOUT_SECONDS = float(os.getenv("IDLE_TIMEOUT_SECONDS", "90"))
 IDLE_CLOSE_CODE = 4000  # application-defined WebSocket close code (4000-4999 range)
 IDLE_CLOSE_REASON = "idle-timeout"
+# Once the order is placed the conversation is over: end the session after the goodbye,
+# as soon as it has been quiet this long, so the screen can reset for the next car.
+POST_ORDER_IDLE_SECONDS = float(os.getenv("POST_ORDER_IDLE_SECONDS", "8"))
+ORDER_COMPLETE_REASON = "order-complete"
 # Outgoing events that mean the conversation is alive: speech in either direction, or tool use.
 # (Audio *input* frames don't count — silence arrives continuously too.)
 _ACTIVITY_EVENT_TYPES = {"bidi_transcript_stream", "bidi_audio_stream", "tool_use_stream"}
@@ -50,7 +55,7 @@ try:
     )
     from agent.order_tools import (
         add_to_order, build_custom_burger, cancel_order, custom_burger_price, get_order_summary, place_order,
-        remove_from_order,
+        remove_from_order, set_session_id,
     )
     from agent.ui_state_manager import set_websocket, clear_websocket, set_ui_state, get_ui_state, reset_ui_state
 except ModuleNotFoundError:
@@ -59,24 +64,11 @@ except ModuleNotFoundError:
     )
     from order_tools import (
         add_to_order, build_custom_burger, cancel_order, custom_burger_price, get_order_summary, place_order,
-        remove_from_order,
+        remove_from_order, set_session_id,
     )
     from ui_state_manager import set_websocket, clear_websocket, set_ui_state, get_ui_state, reset_ui_state
 
 BEDROCK_REGION = os.getenv("BEDROCK_REGION", "us-east-1")
-
-# Shared UI_State from frontend (what the customer is looking at)
-_current_frontend_state: dict = {
-    "visibleCategory": None,
-    "selectedItem": None,
-}
-
-
-@tool
-def get_ui_context() -> dict:
-    """Returns what the customer is currently looking at on screen."""
-    return dict(_current_frontend_state)
-
 
 @tool
 def load_menu() -> dict:
@@ -140,6 +132,7 @@ def update_ui(
             # The server prices the preview — never trust a model-supplied total
             builder["price"] = custom_burger_price(builder.get("toppings"))
             current["burgerBuilder"] = builder
+            current["highlightedItem"] = None  # the builder replaces any item popup
         else:
             current["burgerBuilder"] = None
 
@@ -175,8 +168,9 @@ RULES:
 - When mentioning a category: call update_ui(highlighted_category="<categoryId>")
 - The order shown on screen updates automatically when you add, remove, cancel or place — never describe it any other way
 - Special instructions: pass as special_instructions in add_to_order
+- When the customer is done ordering, call place_order, then read out the order number and total and say goodbye. The session ends on its own afterwards.
 
-TOOLS: load_menu, get_categories, get_items_by_category, get_recommendations, add_to_order, build_custom_burger, remove_from_order, get_order_summary, place_order, cancel_order, update_ui, get_ui_context
+TOOLS: load_menu, get_categories, get_items_by_category, get_recommendations, add_to_order, build_custom_burger, remove_from_order, get_order_summary, place_order, cancel_order, update_ui
 
 BUILD YOUR OWN BURGER (itemId: custom-burger):
 Walk customer through: patty (beef/chicken), toppings, sauces. Use update_ui(burger_builder={"active":true,"patty":null,"toppings":[],"sauces":[]}) to open the builder. Update it as they choose (e.g. burger_builder={"active":true,"patty":"beef patty","toppings":["bacon"],"sauces":[]}); its price is calculated automatically. When done, recap the burger and ask "Sound good, or want to change anything?" — only call build_custom_burger AFTER they confirm.
@@ -267,7 +261,7 @@ async def voice_chat(websocket: WebSocket) -> None:
             load_menu,
             get_categories, get_items_by_category, get_recommendations,
             add_to_order, build_custom_burger, remove_from_order, get_order_summary, place_order, cancel_order,
-            update_ui, get_ui_context, stop_conversation,
+            update_ui, stop_conversation,
         ],
         system_prompt=system_prompt,
     )
@@ -300,7 +294,13 @@ async def voice_chat(websocket: WebSocket) -> None:
         import json as _json
         set_websocket(websocket, asyncio.get_running_loop())
         reset_ui_state()
-        logger.info("WebSocket session started")
+        # AgentCore routes each runtime session ID to its own microVM and passes it through;
+        # recording it on orders ties each one to its conversation and logs.
+        session_id = (websocket.headers.get("x-amzn-bedrock-agentcore-runtime-session-id")
+                      or websocket.query_params.get("X-Amzn-Bedrock-AgentCore-Runtime-Session-Id")
+                      or f"local-{uuid.uuid4()}")
+        set_session_id(session_id)
+        logger.info("WebSocket session started: sessionId=%s", session_id)
 
         async def safe_send_json(data):
             if isinstance(data, dict) and data.get("type") in _ACTIVITY_EVENT_TYPES:
@@ -329,22 +329,33 @@ async def voice_chat(websocket: WebSocket) -> None:
                     mark_activity()
                 return data
 
-        async def idle_watchdog() -> None:
-            """Return once the conversation has been idle for IDLE_TIMEOUT_SECONDS."""
-            while (idle := time.monotonic() - last_activity) < IDLE_TIMEOUT_SECONDS:
-                await asyncio.sleep(IDLE_TIMEOUT_SECONDS - idle)
+        async def idle_watchdog() -> str:
+            """Return the reason to end the session once it has gone quiet for long enough.
+
+            After an order is placed only the goodbye is left, so a short quiet period ends
+            the session (the screen then resets for the next car); otherwise the customer
+            has the full IDLE_TIMEOUT_SECONDS.
+            """
+            while True:
+                order_done = bool(get_ui_state().get("orderConfirmed"))
+                limit = POST_ORDER_IDLE_SECONDS if order_done else IDLE_TIMEOUT_SECONDS
+                idle = time.monotonic() - last_activity
+                if idle >= limit:
+                    return ORDER_COMPLETE_REASON if order_done else IDLE_CLOSE_REASON
+                await asyncio.sleep(min(limit - idle, 1.0))  # re-check: an order may complete meanwhile
 
         agent_task = asyncio.create_task(agent.run(inputs=[rate_limited_receive], outputs=[safe_send_json]))
         watchdog_task = asyncio.create_task(idle_watchdog())
         done, _ = await asyncio.wait({agent_task, watchdog_task}, return_when=asyncio.FIRST_COMPLETED)
 
         if watchdog_task in done:
-            logger.info("Ending session after %.0fs without speech", IDLE_TIMEOUT_SECONDS)
+            reason = watchdog_task.result()
+            logger.info("Ending session: reason=%s after %.0fs of quiet", reason, time.monotonic() - last_activity)
             agent_task.cancel()  # BidiAgent.run() stops the model stream in its own cleanup
             await asyncio.gather(agent_task, return_exceptions=True)
             # Tell the browser why, in-band: proxies don't reliably forward custom close codes.
-            await safe_send_json({"type": "session_ended", "reason": IDLE_CLOSE_REASON})
-            await websocket.close(code=IDLE_CLOSE_CODE, reason=IDLE_CLOSE_REASON)
+            await safe_send_json({"type": "session_ended", "reason": reason})
+            await websocket.close(code=1000 if reason == ORDER_COMPLETE_REASON else IDLE_CLOSE_CODE, reason=reason)
         else:
             watchdog_task.cancel()
             agent_task.result()  # re-raise client disconnects and errors into the handlers below

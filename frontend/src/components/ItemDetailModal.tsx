@@ -31,10 +31,6 @@ export function ItemDetailModal() {
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         backgroundColor: 'rgba(0,0,0,0.5)',
       }}
-      onClick={() => useAppStore.getState().applyAgentUIState({
-        ...useAppStore.getState().agentUI,
-        highlightedItem: null,
-      })}
     >
       <div
         style={{
@@ -42,7 +38,6 @@ export function ItemDetailModal() {
           maxWidth: 420, width: '90%', maxHeight: '80vh', overflow: 'auto',
           boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
         }}
-        onClick={(e) => e.stopPropagation()}
       >
         <img
           src={item.imageUrl}
