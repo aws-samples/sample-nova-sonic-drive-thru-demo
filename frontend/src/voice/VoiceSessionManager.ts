@@ -11,6 +11,14 @@ import type { AgentCoreWebSocketClient, BidiEvent } from './WebSocketClient';
 import { useAppStore } from '../store/appStore';
 import type { MenuData, ScreenState } from '../types';
 
+const SAMPLE_RATE = 16000; // Nova Sonic's input rate (the agent is configured for it)
+// 40 ms mic frames. Smaller frames reach the model sooner (the old ScriptProcessor sent 256 ms
+// at a time), at 25 messages a second; the agent rate-limits by bytes, so that's fine.
+export const FRAME_SAMPLES = 640;
+// While the agent is talking, frames quieter than this are taken for its own voice coming
+// back through the mic, and not sent.
+const ECHO_GATE_RMS = 0.015;
+
 // Waits before each reconnect attempt after an unexpected drop; then the session is given up.
 const RECONNECT_DELAYS_MS = [250, 1000, 2000, 4000, 8000];
 
@@ -97,51 +105,47 @@ export class VoiceSessionManager {
     // 3. Connect WebSocket. The agent sends the menu and screen, then greets the customer.
     await this.client.connect(runtimeArn, region, await getToken(), this.sessionId);
 
-    // 4. Set up audio capture → send as bidi_audio_input JSON events
-    this.captureContext = new AudioContext({ sampleRate: 16000 });
-    const source = this.captureContext.createMediaStreamSource(this.mediaStream);
-    const processor = this.captureContext.createScriptProcessor(4096, 1, 1);
-
-    processor.onaudioprocess = (e: AudioProcessingEvent) => {
-      if (!this.active) return;
-
-      const float32 = e.inputBuffer.getChannelData(0);
-
-      // Simple energy gate: only send audio if it's loud enough to be real speech.
-      // This prevents quiet speaker bleed-through from triggering interruptions
-      // while still allowing the user to interrupt by actually speaking.
-      if (this.isSpeaking) {
-        let energy = 0;
-        for (let i = 0; i < float32.length; i++) {
-          energy += float32[i] * float32[i];
-        }
-        const rms = Math.sqrt(energy / float32.length);
-        // Threshold: RMS below 0.015 is likely echo/background, above is real speech
-        if (rms < 0.015) return;
-      }
-
-      const int16 = new Int16Array(float32.length);
-      for (let i = 0; i < float32.length; i++) {
-        const s = Math.max(-1, Math.min(1, float32[i]));
-        int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-      }
-      const base64 = btoa(String.fromCharCode(...new Uint8Array(int16.buffer)));
-      this.client.send({
-        type: 'bidi_audio_input',
-        audio: base64,
-        format: 'pcm',
-        sample_rate: 16000,
-        channels: 1,
+    // 4. Capture the mic on the audio thread in 40 ms frames → send as bidi_audio_input JSON events
+    try {
+      this.captureContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+      await this.captureContext.audioWorklet.addModule(`${import.meta.env.BASE_URL}audio-capture-worklet.js`);
+      const source = this.captureContext.createMediaStreamSource(this.mediaStream);
+      const capture = new AudioWorkletNode(this.captureContext, 'audio-capture', {
+        numberOfInputs: 1,
+        numberOfOutputs: 0, // nothing to play: it only reads the mic
+        channelCount: 1,
+        processorOptions: { frameSize: FRAME_SAMPLES },
       });
-    };
-
-    source.connect(processor);
-    processor.connect(this.captureContext.destination);
+      capture.port.onmessage = (e: MessageEvent<{ pcm: ArrayBuffer; rms: number }>) =>
+        this.sendAudioFrame(e.data.pcm, e.data.rms);
+      source.connect(capture);
+    } catch (err) {
+      this.endSession(); // don't leave the connection open without a microphone
+      throw new Error(`Could not start the microphone: ${(err as Error).message}`);
+    }
 
     // 5. Mark active
     this.active = true;
     useAppStore.getState().setVoiceSession(true);
     useAppStore.getState().setListening(true);
+  }
+
+  /** Send one captured mic frame (16-bit PCM) to the agent. */
+  sendAudioFrame(pcm: ArrayBuffer, rms: number): void {
+    if (!this.active) return;
+    // Simple energy gate while the agent is talking: quiet speaker bleed-through would
+    // otherwise interrupt it, but a customer who actually speaks up still can.
+    if (this.isSpeaking && rms < ECHO_GATE_RMS) return;
+    const bytes = new Uint8Array(pcm);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    this.client.send({
+      type: 'bidi_audio_input',
+      audio: btoa(binary),
+      format: 'pcm',
+      sample_rate: SAMPLE_RATE,
+      channels: 1,
+    });
   }
 
   /** Reconnect to the same agent session after an unexpected drop, keeping the microphone open. */

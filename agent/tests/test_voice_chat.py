@@ -106,6 +106,27 @@ def test_only_microphone_audio_reaches_the_agent(client):
     assert FakeAgent.instances[0].inputs == [AUDIO]
 
 
+def test_40ms_audio_frames_reach_the_agent(client):
+    frame = {**AUDIO, "audio": "A" * 1708}  # 40 ms of 16 kHz PCM16, base64'd
+    with client.websocket_connect(url("s1")) as ws:
+        receive_until(ws, lambda e: e.get("text") == "Welcome!")
+        for _ in range(60):
+            ws.send_json(frame)
+        for _ in range(60):
+            receive_until(ws, lambda e: e["type"] == "bidi_audio_stream")
+    assert len(FakeAgent.instances[0].inputs) == 60
+
+
+def test_malformed_and_oversized_messages_are_dropped(client):
+    with client.websocket_connect(url("s1")) as ws:
+        receive_until(ws, lambda e: e.get("text") == "Welcome!")
+        ws.send_text("not json")
+        ws.send_json({**AUDIO, "audio": "A" * (main.MAX_WS_MESSAGE_BYTES + 1)})
+        ws.send_json(AUDIO)
+        receive_until(ws, lambda e: e["type"] == "bidi_audio_stream")
+    assert FakeAgent.instances[0].inputs == [AUDIO]
+
+
 def test_a_dropped_connection_resumes_the_same_order(client):
     with client.websocket_connect(url("s1")) as ws:
         receive_until(ws, lambda e: e.get("text") == "Welcome!")
@@ -161,6 +182,52 @@ def test_a_failing_agent_tells_the_browser_instead_of_just_closing(client, monke
         ended = receive_until(ws, lambda e: e["type"] == "CUSTOM" and e["name"] == "session_ended")
         assert ended["value"] == {"reason": main.AGENT_ERROR_REASON}
     assert "s1" not in sessions._sessions
+
+
+class ServiceUnavailableException(Exception):
+    """Same name as the Bedrock runtime SDK's error, which is what the server matches on."""
+
+
+def test_a_model_outage_mid_order_restarts_the_conversation_on_the_same_connection(client, monkeypatch):
+    """Seen live: ServiceUnavailableException 2.5 minutes into an order ended the session."""
+    monkeypatch.setattr(main, "MODEL_RESTART_DELAYS_SECONDS", (0,))
+
+    class FailsOnce(FakeAgent):
+        async def run(self, inputs, outputs, invocation_state):
+            if len(FakeAgent.instances) == 1:
+                self.session = invocation_state["session"]
+                self.opening = (await inputs[0]())["text"]
+                await outputs[0]({"type": "bidi_audio_stream", "audio": "hi"})
+                with self.session.lock:
+                    self.session.order.add_item("cola", "Cola", 1, 900)
+                raise ServiceUnavailableException("Bedrock is unable to process your request.")
+            await super().run(inputs, outputs, invocation_state)
+
+    monkeypatch.setattr(main, "BidiAgent", FailsOnce)
+    with client.websocket_connect(url("s1")) as ws:
+        receive_until(ws, lambda e: e["type"] == "bidi_interruption")  # the half-played reply stops
+        receive_until(ws, lambda e: e.get("text") == "Welcome!")  # and the new stream picks up
+        ws.send_json(AUDIO)
+        receive_until(ws, lambda e: e["type"] == "bidi_audio_stream" and e["audio"] == AUDIO["audio"])
+    first, second = FakeAgent.instances
+    assert second.opening == main.RECONNECT_CUE
+    assert "1 x Cola [itemId: cola]" in second.system_prompt
+    assert second.session is first.session
+
+
+def test_a_model_that_keeps_failing_ends_the_session(client, monkeypatch):
+    monkeypatch.setattr(main, "MODEL_RESTART_DELAYS_SECONDS", (0,))
+
+    class AlwaysFails(FakeAgent):
+        async def run(self, inputs, outputs, invocation_state):
+            await inputs[0]()
+            raise ServiceUnavailableException("Bedrock is unable to process your request.")
+
+    monkeypatch.setattr(main, "BidiAgent", AlwaysFails)
+    with client.websocket_connect(url("s1")) as ws:
+        ended = receive_until(ws, lambda e: e["type"] == "CUSTOM" and e["name"] == "session_ended")
+        assert ended["value"] == {"reason": main.AGENT_ERROR_REASON}
+    assert len(FakeAgent.instances) == 1 + main.MAX_MODEL_RESTARTS
 
 
 def test_an_idle_session_ends(client, monkeypatch):

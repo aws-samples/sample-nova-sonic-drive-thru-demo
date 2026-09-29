@@ -28,12 +28,35 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 
-# --- Rate limiting ---
-# Per-session: max messages per window
-RATE_LIMIT_WINDOW_SECONDS = 10
-RATE_LIMIT_MAX_MESSAGES = 50  # max WebSocket messages per window
+# --- Rate limiting (per connection) ---
+# Limit what the browser sends by bytes, not message count, so frame size is the client's
+# choice: 16 kHz 16-bit mono audio is 32 KB/s, about 43 KB/s once base64'd into JSON, whether
+# it arrives as 40 ms frames (25 a second) or 256 ms ones. Twice that leaves room for jitter;
+# the bursts absorb a stalled network flushing its backlog at once.
+RATE_LIMIT_BYTES_PER_SECOND = 88 * 1024
+RATE_LIMIT_BURST_BYTES = 4 * RATE_LIMIT_BYTES_PER_SECOND
+# And by count, so a flood of tiny messages can't get through on bytes alone.
+RATE_LIMIT_MESSAGES_PER_SECOND = 100
+RATE_LIMIT_BURST_MESSAGES = 400
 # Max WebSocket frame size (64 KB) to prevent oversized audio payloads
 MAX_WS_MESSAGE_BYTES = 64 * 1024
+
+
+class TokenBucket:
+    """Allows `rate` units a second on average, and bursts of up to `capacity` units."""
+
+    def __init__(self, rate: float, capacity: float, clock=time.monotonic):
+        self.rate, self.capacity, self._clock = rate, capacity, clock
+        self._tokens, self._last = capacity, clock()
+
+    def take(self, amount: float) -> bool:
+        now = self._clock()
+        self._tokens = min(self.capacity, self._tokens + (now - self._last) * self.rate)
+        self._last = now
+        if amount > self._tokens:
+            return False
+        self._tokens -= amount
+        return True
 
 # --- Ending sessions ---
 # The browser streams microphone audio continuously, so an abandoned tab would keep a paid
@@ -52,6 +75,17 @@ CONVERSATION_ENDED_REASON = "conversation-ended"
 # error instead of taking the close for a dropped connection and reconnecting into it again.
 AGENT_ERROR_REASON = "agent-error"
 AGENT_ERROR_CLOSE_CODE = 1011  # internal error
+# Bedrock errors that end a model stream but are worth retrying: the conversation restarts on
+# a new stream, on the same connection, with its order and transcript. (Seen live: a
+# ServiceUnavailableException 2.5 minutes into an order.) Matched by class name, as they come
+# from the Bedrock runtime SDK's models module.
+RETRYABLE_MODEL_ERRORS = {
+    "ServiceUnavailableException", "ModelStreamErrorException", "ThrottlingException",
+    "InternalServerException", "ModelTimeoutException",
+}
+# Restarts in a row without the agent being heard in between; then the session ends.
+MAX_MODEL_RESTARTS = 3
+MODEL_RESTART_DELAYS_SECONDS = (0.5, 1.0, 2.0)
 # A newer connection for the same session took over (e.g. the browser reconnected before
 # this connection's drop was noticed).
 REPLACED_CLOSE_CODE = 4001
@@ -67,6 +101,10 @@ _ACCEPTED_INPUT_TYPES = {"bidi_audio_input"}
 # so the agent speaks first. It is not shown or spoken to the customer.
 GREETING_CUE = "(A customer has pulled up to the drive-thru.)"
 RECONNECT_CUE = "(The connection to the customer dropped for a moment and is back.)"
+
+
+def is_retryable_model_error(error: BaseException) -> bool:
+    return type(error).__name__ in RETRYABLE_MODEL_ERRORS
 
 try:
     from agent import session as sessions
@@ -201,18 +239,17 @@ async def voice_chat(websocket: WebSocket) -> None:
     end_reason = None
 
     # --- Per-connection rate limiter ---
-    message_timestamps: list[float] = []
+    byte_budget = TokenBucket(RATE_LIMIT_BYTES_PER_SECOND, RATE_LIMIT_BURST_BYTES)
+    message_budget = TokenBucket(RATE_LIMIT_MESSAGES_PER_SECOND, RATE_LIMIT_BURST_MESSAGES)
+    dropped = {"count": 0, "logged_at": 0.0}
 
-    def check_rate_limit() -> bool:
-        """Return True if the message should be allowed, False if rate-limited."""
+    def note_dropped(why: str) -> None:
+        """Log dropped messages at most once a second, rather than once per frame."""
+        dropped["count"] += 1
         now = time.monotonic()
-        cutoff = now - RATE_LIMIT_WINDOW_SECONDS
-        while message_timestamps and message_timestamps[0] < cutoff:
-            message_timestamps.pop(0)
-        if len(message_timestamps) >= RATE_LIMIT_MAX_MESSAGES:
-            return False
-        message_timestamps.append(now)
-        return True
+        if now - dropped["logged_at"] >= 1.0:
+            logger.warning("Dropped %d incoming message(s): %s", dropped["count"], why)
+            dropped["count"], dropped["logged_at"] = 0, now
 
     try:
         await websocket.accept()
@@ -230,42 +267,58 @@ async def voice_chat(websocket: WebSocket) -> None:
         await session.send(session.menu_event())
         await session.send(session.snapshot_event())
 
-        agent = BidiAgent(
-            model=_new_model(),
-            tools=TOOLS,
-            system_prompt=build_system_prompt(session),
-            messages=session.messages,  # the conversation so far, if this is a reconnect
-        )
-        session.messages = agent.messages  # the same list from now on, so it keeps growing
+        opening: list[dict] = []
+        heard_since_restart = True  # has the agent spoken since the last model restart?
+
+        def start_agent(cue: str | None) -> BidiAgent:
+            """A new agent (and model stream) that carries on the session's conversation."""
+            new_agent = BidiAgent(
+                model=_new_model(),
+                tools=TOOLS,
+                system_prompt=build_system_prompt(session),  # includes the order so far
+                messages=session.messages,  # the conversation so far, if any
+            )
+            session.messages = new_agent.messages  # the same list from now on, so it keeps growing
+            # After a placed order there's nothing left to say; the session is about to end.
+            opening[:] = [] if (cue is None or session.order_placed) else [
+                {"type": "bidi_text_input", "text": cue, "role": "user"},
+            ]
+            return new_agent
 
         # The agent speaks first: greet a new customer, or pick up after a dropped connection.
-        # After a placed order there's nothing left to say; the session is about to end.
-        opening = [] if session.order_placed else [
-            {"type": "bidi_text_input", "text": RECONNECT_CUE if resumed else GREETING_CUE, "role": "user"},
-        ]
+        agent = start_agent(RECONNECT_CUE if resumed else GREETING_CUE)
 
         async def receive_input():
             """The next input for the agent: the opening cue, then the customer's microphone audio."""
             if opening:
                 return opening.pop()
             while True:
-                data = await websocket.receive_json()
+                text = await websocket.receive_text()
+                size = len(text.encode("utf-8"))
+                # Checked before parsing, so oversized or excess messages cost nothing more
+                if size > MAX_WS_MESSAGE_BYTES:
+                    note_dropped(f"oversized ({size} bytes)")
+                    continue
+                if not (message_budget.take(1) and byte_budget.take(size)):
+                    note_dropped("rate limit")
+                    continue
+                try:
+                    data = json.loads(text)
+                except ValueError:
+                    note_dropped("not JSON")
+                    continue
                 if not isinstance(data, dict) or data.get("type") not in _ACCEPTED_INPUT_TYPES:
-                    logger.warning("Dropped a message the voice-only client shouldn't send: %s",
-                                   data.get("type") if isinstance(data, dict) else type(data).__name__)
-                    continue
-                payload_size = len(json.dumps(data, default=str).encode("utf-8"))
-                if payload_size > MAX_WS_MESSAGE_BYTES:
-                    logger.warning("Oversized WebSocket payload rejected: %d bytes", payload_size)
-                    continue
-                if not check_rate_limit():
-                    logger.warning("Rate limit exceeded for WebSocket session")
+                    note_dropped(f"type {data.get('type') if isinstance(data, dict) else type(data).__name__!r} "
+                                 "(the voice-only client only sends audio)")
                     continue
                 return data
 
         async def send_output(event):
+            nonlocal heard_since_restart
             if isinstance(event, dict) and event.get("type") in _ACTIVITY_EVENT_TYPES:
                 session.mark_activity()
+                if event["type"] == "bidi_audio_stream":
+                    heard_since_restart = True
             await session.send(event, websocket=websocket)
 
         async def idle_watchdog() -> str | None:
@@ -286,25 +339,47 @@ async def voice_chat(websocket: WebSocket) -> None:
                     return ORDER_COMPLETE_REASON if order_done else IDLE_CLOSE_REASON
                 await asyncio.sleep(min(limit - idle, 1.0))  # re-check: an order may complete meanwhile
 
-        agent_task = asyncio.create_task(agent.run(
-            inputs=[receive_input], outputs=[send_output], invocation_state={"session": session},
-        ))
         watchdog_task = asyncio.create_task(idle_watchdog())
-        done, _ = await asyncio.wait({agent_task, watchdog_task}, return_when=asyncio.FIRST_COMPLETED)
+        restarts = 0
+        while True:
+            agent_task = asyncio.create_task(agent.run(
+                inputs=[receive_input], outputs=[send_output], invocation_state={"session": session},
+            ))
+            done, _ = await asyncio.wait({agent_task, watchdog_task}, return_when=asyncio.FIRST_COMPLETED)
 
-        if watchdog_task in done:
-            end_reason = watchdog_task.result()
-            agent_task.cancel()  # BidiAgent.run() stops the model stream in its own cleanup
-            await asyncio.gather(agent_task, return_exceptions=True)
-            if end_reason is None:
-                logger.info("Connection replaced by a newer one: sessionId=%s", session_id)
-                return  # the session lives on in the new connection
-            logger.info("Ending session: reason=%s after %.0fs of quiet", end_reason,
-                        time.monotonic() - session.last_activity)
-        else:
-            watchdog_task.cancel()
-            agent_task.result()  # re-raise client disconnects and errors into the handlers below
-            end_reason = CONVERSATION_ENDED_REASON  # the agent finished the conversation itself
+            if watchdog_task in done:
+                end_reason = watchdog_task.result()
+                agent_task.cancel()  # BidiAgent.run() stops the model stream in its own cleanup
+                await asyncio.gather(agent_task, return_exceptions=True)
+                if end_reason is None:
+                    logger.info("Connection replaced by a newer one: sessionId=%s", session_id)
+                    return  # the session lives on in the new connection
+                logger.info("Ending session: reason=%s after %.0fs of quiet", end_reason,
+                            time.monotonic() - session.last_activity)
+                break
+
+            error = agent_task.exception()
+            if error is None:
+                watchdog_task.cancel()
+                end_reason = CONVERSATION_ENDED_REASON  # the agent finished the conversation itself
+                break
+            if heard_since_restart:
+                restarts = 0  # the last restart worked; this is a new failure
+            if not is_retryable_model_error(error) or restarts >= MAX_MODEL_RESTARTS:
+                watchdog_task.cancel()
+                raise error  # client disconnects and errors go to the handlers below
+
+            # A transient model failure: carry on the same conversation on a new model stream
+            logger.warning("Model stream failed, restarting it (%d/%d): sessionId=%s: %s: %s",
+                           restarts + 1, MAX_MODEL_RESTARTS, session_id, type(error).__name__, error)
+            # (run() has already stopped the failed agent and its model stream)
+            # The reply that was playing won't continue; stop it in the browser
+            await session.send({"type": "bidi_interruption", "reason": "model_restart"}, websocket=websocket)
+            await asyncio.sleep(MODEL_RESTART_DELAYS_SECONDS[min(restarts, len(MODEL_RESTART_DELAYS_SECONDS) - 1)])
+            restarts += 1
+            heard_since_restart = False
+            session.mark_activity()  # the customer shouldn't time out while the agent restarts
+            agent = start_agent(RECONNECT_CUE)
 
         # Tell the browser why, in-band: proxies don't reliably forward custom close codes.
         await session.send({"type": "CUSTOM", "name": "session_ended", "value": {"reason": end_reason}},
