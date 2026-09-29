@@ -20,9 +20,16 @@ export class VoiceSessionManager {
   private active = false;
   private currentSource: AudioBufferSourceNode | null = null;
   private isSpeaking = false; // true while agent audio is playing
+  private endReason: string | null = null; // set when the agent says why it is ending the session
+  private onEnded: ((message: string) => void) | null;
 
-  constructor(client: AgentCoreWebSocketClient) {
+  /**
+   * @param onEnded Called with a user-facing message when the session ends without the user
+   *   pressing Stop (the agent ended it, or the connection dropped).
+   */
+  constructor(client: AgentCoreWebSocketClient, onEnded?: (message: string) => void) {
     this.client = client;
+    this.onEnded = onEnded ?? null;
   }
 
   async startSession(
@@ -44,6 +51,18 @@ export class VoiceSessionManager {
     // 2. Register event handler BEFORE connecting so we don't miss the initial state
     this.playbackContext = new AudioContext({ sampleRate: 16000 });
     this.client.onEvent((event: BidiEvent) => this.handleEvent(event));
+
+    // The server can close the session (e.g. after a period of silence). Release the mic and
+    // tell the user, rather than showing "Listening…" on a closed socket.
+    this.client.onDisconnect(() => {
+      if (!this.active) return; // closed by endSession(), i.e. the user pressed Stop
+      this.endSession();
+      this.onEnded?.(
+        this.endReason === 'idle-timeout'
+          ? 'Your session ended after a period of silence. Start again whenever you are ready.'
+          : 'The voice session was disconnected. Start again to continue.',
+      );
+    });
 
     // 3. Connect WebSocket
     await this.client.connect(runtimeArn, region, jwtToken);
@@ -150,6 +169,11 @@ export class VoiceSessionManager {
         break;
 
       case 'bidi_transcript_stream':
+        break;
+
+      case 'session_ended':
+        // Sent by the agent just before it closes the socket
+        this.endReason = typeof event.reason === 'string' ? event.reason : null;
         break;
 
       case 'ui_state_update':

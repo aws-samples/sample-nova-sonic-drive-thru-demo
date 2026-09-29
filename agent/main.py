@@ -33,6 +33,17 @@ RATE_LIMIT_MAX_MESSAGES = 50  # max WebSocket messages per window
 # Max WebSocket frame size (64 KB) to prevent oversized audio payloads
 MAX_WS_MESSAGE_BYTES = 64 * 1024
 
+# --- Idle timeout ---
+# The browser streams microphone audio continuously, so an abandoned tab would keep a paid
+# Nova Sonic stream and AgentCore session open indefinitely. End the session once nobody has
+# spoken (and the agent hasn't spoken or used a tool) for this long.
+IDLE_TIMEOUT_SECONDS = float(os.getenv("IDLE_TIMEOUT_SECONDS", "90"))
+IDLE_CLOSE_CODE = 4000  # application-defined WebSocket close code (4000-4999 range)
+IDLE_CLOSE_REASON = "idle-timeout"
+# Outgoing events that mean the conversation is alive: speech in either direction, or tool use.
+# (Audio *input* frames don't count — silence arrives continuously too.)
+_ACTIVITY_EVENT_TYPES = {"bidi_transcript_stream", "bidi_audio_stream", "tool_use_stream"}
+
 try:
     from agent.menu_tools import (
         get_categories, get_items_by_category, get_recommendations,
@@ -276,6 +287,13 @@ async def voice_chat(websocket: WebSocket) -> None:
         message_timestamps.append(now)
         return True
 
+    # --- Idle tracking ---
+    last_activity = time.monotonic()
+
+    def mark_activity() -> None:
+        nonlocal last_activity
+        last_activity = time.monotonic()
+
     try:
         await websocket.accept()
         import asyncio
@@ -285,6 +303,8 @@ async def voice_chat(websocket: WebSocket) -> None:
         logger.info("WebSocket session started")
 
         async def safe_send_json(data):
+            if isinstance(data, dict) and data.get("type") in _ACTIVITY_EVENT_TYPES:
+                mark_activity()
             try:
                 await websocket.send_json(data)
             except (TypeError, ValueError):
@@ -305,12 +325,29 @@ async def voice_chat(websocket: WebSocket) -> None:
                 if not check_rate_limit():
                     logger.warning("Rate limit exceeded for WebSocket session")
                     continue  # silently drop and wait for next message
+                if isinstance(data, dict) and data.get("type") == "bidi_text_input":
+                    mark_activity()
                 return data
 
-        await agent.run(
-            inputs=[rate_limited_receive],
-            outputs=[safe_send_json],
-        )
+        async def idle_watchdog() -> None:
+            """Return once the conversation has been idle for IDLE_TIMEOUT_SECONDS."""
+            while (idle := time.monotonic() - last_activity) < IDLE_TIMEOUT_SECONDS:
+                await asyncio.sleep(IDLE_TIMEOUT_SECONDS - idle)
+
+        agent_task = asyncio.create_task(agent.run(inputs=[rate_limited_receive], outputs=[safe_send_json]))
+        watchdog_task = asyncio.create_task(idle_watchdog())
+        done, _ = await asyncio.wait({agent_task, watchdog_task}, return_when=asyncio.FIRST_COMPLETED)
+
+        if watchdog_task in done:
+            logger.info("Ending session after %.0fs without speech", IDLE_TIMEOUT_SECONDS)
+            agent_task.cancel()  # BidiAgent.run() stops the model stream in its own cleanup
+            await asyncio.gather(agent_task, return_exceptions=True)
+            # Tell the browser why, in-band: proxies don't reliably forward custom close codes.
+            await safe_send_json({"type": "session_ended", "reason": IDLE_CLOSE_REASON})
+            await websocket.close(code=IDLE_CLOSE_CODE, reason=IDLE_CLOSE_REASON)
+        else:
+            watchdog_task.cancel()
+            agent_task.result()  # re-raise client disconnects and errors into the handlers below
     except WebSocketDisconnect:
         logger.info("Client disconnected")
     except Exception as e:
@@ -319,7 +356,9 @@ async def voice_chat(websocket: WebSocket) -> None:
         clear_websocket()
         logger.info("WebSocket session ended, cleaning up")
         try:
-            if websocket.client_state == WebSocketState.CONNECTED:
+            # Skip the close if either side has already closed (e.g. after an idle timeout)
+            if (websocket.client_state == WebSocketState.CONNECTED
+                    and websocket.application_state == WebSocketState.CONNECTED):
                 await websocket.close()
             await agent.stop()
         except Exception as cleanup_err:

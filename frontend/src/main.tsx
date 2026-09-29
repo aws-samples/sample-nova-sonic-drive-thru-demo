@@ -16,7 +16,8 @@ loadRuntimeConfig().then(() => {
 
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
-      <Authenticator>
+      {/* Accounts are admin-created (self sign-up is disabled in Cognito), so hide the sign-up tab. */}
+      <Authenticator hideSignUp>
         <App />
       </Authenticator>
     </StrictMode>,

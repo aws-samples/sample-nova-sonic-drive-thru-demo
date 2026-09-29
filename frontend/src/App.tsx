@@ -27,10 +27,12 @@ export default function App() {
 
   const voiceManagerRef = useRef<VoiceSessionManager | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
 
   const handleStartVoice = useCallback(async () => {
     setVoiceError(null);
+    setVoiceNotice(null);
     setConnecting(true);
     try {
       const config = getRuntimeConfig();
@@ -38,7 +40,10 @@ export default function App() {
       const token = session.tokens?.accessToken?.toString();
       if (!token) throw new Error('No access token available');
       const client = createWebSocketClient();
-      const manager = new VoiceSessionManager(client);
+      const manager = new VoiceSessionManager(client, (message) => {
+        voiceManagerRef.current = null;
+        setVoiceNotice(message);
+      });
       voiceManagerRef.current = manager;
       await manager.startSession(config.agentRuntimeArn, config.awsRegion, token);
     } catch (err) {
@@ -101,6 +106,9 @@ export default function App() {
         {voiceError && (
           <p style={{ color: 'red', marginTop: 16 }}>{voiceError}</p>
         )}
+        {voiceNotice && (
+          <p role="status" style={{ color: '#666', marginTop: 16 }}>{voiceNotice}</p>
+        )}
 
         <button onClick={signOut} type="button" style={{ marginTop: 48, color: '#999', background: 'none', border: 'none', cursor: 'pointer' }}>
           Sign Out
@@ -116,10 +124,13 @@ export default function App() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <h1 style={{ margin: 0 }}>🍔 Drive-Thru</h1>
         <div style={{ display: 'flex', gap: 8 }}>
-          {sessionActive && (
+          {sessionActive ? (
             <button onClick={handleStopVoice} type="button">Stop</button>
+          ) : (
+            <button onClick={handleStartVoice} type="button" disabled={connecting}>
+              {connecting ? 'Connecting…' : '🎙️ Start again'}
+            </button>
           )}
-
         </div>
       </div>
 
@@ -129,6 +140,7 @@ export default function App() {
         </div>
       )}
       {voiceError && <p style={{ color: 'red' }}>{voiceError}</p>}
+      {voiceNotice && <p role="status" style={{ color: '#666' }}>{voiceNotice}</p>}
 
       <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start' }}>
         {/* Build Your Own — left sidebar (only show when menu is loaded) */}

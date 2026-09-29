@@ -94,7 +94,7 @@ aws cognito-idp admin-set-user-password \
 
 ## How It Works
 
-1. **Sign in** → Cognito Authenticator handles sign-in, sign-up, password reset
+1. **Sign in** → Cognito Authenticator handles sign-in and password reset (accounts are created by an admin, see above)
 2. **Start Your Order** → big centered button, connects WebSocket to AgentCore
 3. **Agent loads menu** → calls `load_menu` tool, sends full menu to frontend via `update_ui`
 4. **Voice conversation** → bidirectional audio streaming with Nova Sonic

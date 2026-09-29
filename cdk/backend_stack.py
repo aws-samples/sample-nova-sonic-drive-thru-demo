@@ -300,7 +300,9 @@ class BackendStack(Stack):
         self.user_pool = cognito.UserPool(
             self, "DriveThruUserPool",
             user_pool_name="DriveThruUserPool",
-            self_sign_up_enabled=True,
+            # Every account can open paid Nova Sonic sessions, so accounts are admin-created only
+            # (see "Create a Cognito user" in the README).
+            self_sign_up_enabled=False,
             sign_in_aliases=cognito.SignInAliases(email=True),
             auto_verify=cognito.AutoVerifiedAttrs(email=True),
             standard_attributes=cognito.StandardAttributes(
