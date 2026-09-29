@@ -154,12 +154,12 @@ The CDK tests include regression checks for problems that only appear after depl
 
 ## Agent Tools
 
+The menu is in the agent's instructions and on screen from the start, so there is no tool to load it. Only these tools change the screen, and only the server sets prices.
+
 | Tool | Purpose |
 |------|---------|
 | `show_item` | Shows an item's details on screen and returns them |
 | `show_category` | Scrolls the screen to a category and returns its items |
-The menu is in the agent's instructions and on screen from the start, so there is no tool to load it. Only these tools change the screen, and only the server sets prices.
-
 | `get_recommendations` | Returns featured items |
 | `add_to_order` | Adds item with optional special instructions |
 | `remove_from_order` | Removes item from order |
