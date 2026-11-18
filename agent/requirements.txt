@@ -1,14 +1,16 @@
-# Pinned to a tested-compatible set. Newer strands-agents releases renamed
-# BidiNovaSonicModel (imported by main.py), and aws-sdk-bedrock-runtime 0.9+
-# renamed the client class that strands-agents 1.51.0 imports.
-strands-agents[bidi]==1.51.0
-aws-sdk-bedrock-runtime==0.8.0
-smithy-aws-core==0.8.0
-smithy-core==0.7.0
-smithy-http==0.4.4
-smithy-json==0.2.3
+# Pinned to a tested-compatible set. The Strands bidi API was experimental until recently and
+# renamed things between releases (strands.bidi, BedrockNovaSonicModel), and the Smithy-based
+# Bedrock runtime SDK changes its client classes between 0.x releases, so upgrade them together
+# and re-run the tests and a live session.
+strands-agents[bidi]==1.65.0
+aws-sdk-bedrock-runtime==0.11.0
+smithy-aws-core==0.11.0
+smithy-core==0.8.1
+smithy-http==0.5.0
+smithy-json==0.3.0
 smithy-aws-event-stream==0.3.0
 aws-sdk-signers==0.3.1
+pydantic==2.14.3
 boto3>=1.35.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0

@@ -20,9 +20,9 @@ from datetime import datetime
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
-from strands.experimental.bidi import BidiAgent
-from strands.experimental.bidi.models import BidiNovaSonicModel
-from strands.experimental.bidi.tools import stop_conversation
+from strands import ToolContext, tool
+from strands.bidi import BidiAgent
+from strands.bidi.models import BedrockNovaSonicModel
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -93,7 +93,7 @@ MODEL_RESTART_DELAYS_SECONDS = (0.5, 1.0, 2.0)
 REPLACED_CLOSE_CODE = 4001
 # Outgoing events that mean the conversation is alive: speech in either direction, or tool use.
 # (Audio *input* frames don't count — silence arrives continuously too.)
-_ACTIVITY_EVENT_TYPES = {"bidi_transcript_stream", "bidi_audio_stream", "tool_use_stream"}
+_ACTIVITY_EVENT_TYPES = {"bidi_transcript_delta", "bidi_transcript_block", "bidi_audio_delta", "bidi_tool_use_blocks"}
 
 # The screen is voice-only, so the browser only ever sends microphone audio, as binary frames.
 # Text frames (e.g. typed text) are dropped.
@@ -106,6 +106,13 @@ RECONNECT_CUE = "(The connection to the customer dropped for a moment and is bac
 
 def is_retryable_model_error(error: BaseException) -> bool:
     return type(error).__name__ in RETRYABLE_MODEL_ERRORS
+
+
+@tool(context=True)
+def stop_conversation(tool_context: ToolContext) -> str:
+    """End the conversation, when the customer says they are done or says goodbye without ordering."""
+    tool_context.agent.cancel()  # takes effect once this tool call's results are recorded
+    return "Ending the conversation."
 
 try:
     from agent import custom_burger, protocol, session as sessions
@@ -203,7 +210,7 @@ def build_system_prompt(session: sessions.Session) -> str:
             .replace("{current_order}", _current_order(session)))
 
 
-def _new_model() -> BidiNovaSonicModel:
+def _new_model() -> BedrockNovaSonicModel:
     """A Nova Sonic model for one connection.
 
     The model object holds its stream, so connections must not share one: when a reconnect
@@ -211,27 +218,21 @@ def _new_model() -> BidiNovaSonicModel:
     Nova 2.5 Sonic follows instructions and calls tools more accurately than Nova 2 Sonic, with
     lower latency and shorter replies. (Nova Sonic v1 has reached end of life in Bedrock.)
     """
-    audio = protocol.AUDIO_FORMAT  # what the browser sends and plays
-    return BidiNovaSonicModel(
+    rate = {"sample_rate": protocol.AUDIO_FORMAT.sampleRate}  # what the browser sends and plays (mono PCM)
+    return BedrockNovaSonicModel(
         model_id="amazon.nova-2-5-sonic",
-        provider_config={
-            "audio": {"voice": "tiffany", "input_rate": audio.sampleRate, "output_rate": audio.sampleRate,
-                      "channels": audio.channels, "format": "pcm"},
-            "inference": {},
-        },
-        client_config={"region": BEDROCK_REGION},
+        region=BEDROCK_REGION,
+        audio={"input": rate, "output": rate},
+        voice="tiffany",
     )
 
 
 def audio_input_event(pcm: bytes) -> dict:
-    """A binary frame from the browser, as the BidiAgent input event that carries it."""
-    return {
-        "type": "bidi_audio_input",
-        "audio": base64.b64encode(pcm).decode("ascii"),
-        "format": "pcm",
-        "sample_rate": protocol.AUDIO_FORMAT.sampleRate,
-        "channels": protocol.AUDIO_FORMAT.channels,
-    }
+    """A binary frame from the browser, as the BidiAgent input that carries it (raw bytes, no base64).
+
+    Its sample rate is the model's configured input rate (see _new_model).
+    """
+    return {"audio_delta": {"format": "pcm", "source": {"bytes": pcm}}}
 
 
 def session_ended(reason: str) -> protocol.SessionEndedEvent:
@@ -303,9 +304,7 @@ async def voice_chat(websocket: WebSocket) -> None:
             )
             session.messages = new_agent.messages  # the same list from now on, so it keeps growing
             # After a placed order there's nothing left to say; the session is about to end.
-            opening[:] = [] if (cue is None or session.order_placed) else [
-                {"type": "bidi_text_input", "text": cue, "role": "user"},
-            ]
+            opening[:] = [] if (cue is None or session.order_placed) else [cue]  # text, as the customer
             return new_agent
 
         # The agent speaks first: greet a new customer, or pick up after a dropped connection.
@@ -346,15 +345,14 @@ async def voice_chat(websocket: WebSocket) -> None:
                 return
             if event.get("type") in _ACTIVITY_EVENT_TYPES:
                 session.mark_activity()
-            if event.get("type") == "bidi_audio_stream":
+            if event.get("type") == "bidi_audio_delta":
                 heard_since_restart = True
                 if event.get("sample_rate", protocol.AUDIO_FORMAT.sampleRate) != protocol.AUDIO_FORMAT.sampleRate:
                     note_dropped(f"agent audio at {event.get('sample_rate')} Hz, not the protocol's rate")
                     return
                 await session.send_audio(base64.b64decode(event["audio"]), websocket=websocket)
-            elif event.get("type") == "bidi_interruption":
-                reason = str(event.get("reason") or "user_speech")
-                await session.send(protocol.InterruptionEvent(reason=reason), websocket=websocket)
+            elif event.get("type") == "bidi_barge_in":  # the customer spoke over the agent
+                await session.send(protocol.InterruptionEvent(reason="user_speech"), websocket=websocket)
 
         async def idle_watchdog() -> str | None:
             """Return the reason to end the session once it has gone quiet for long enough.

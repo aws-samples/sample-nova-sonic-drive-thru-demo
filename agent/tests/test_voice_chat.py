@@ -28,8 +28,13 @@ GREETING = b"\x01\x02" * 100  # what the fake agent "says" first
 
 def agent_audio(pcm: bytes) -> dict:
     """Agent voice, as BidiAgent emits it."""
-    return {"type": "bidi_audio_stream", "audio": base64.b64encode(pcm).decode(), "format": "pcm",
-            "sample_rate": 16000, "channels": 1}
+    return {"type": "bidi_audio_delta", "audio": base64.b64encode(pcm).decode(), "format": "pcm",
+            "sample_rate": 16000, "channels": 1, "content_id": "c1"}
+
+
+def mic_audio(event) -> bytes:
+    """The microphone audio in an input the server handed to the agent."""
+    return event["audio_delta"]["source"]["bytes"]
 
 
 class FakeAgent:
@@ -49,16 +54,16 @@ class FakeAgent:
     async def run(self, inputs, outputs, invocation_state):
         receive, send = inputs[0], outputs[0]
         self.session = invocation_state["session"]
-        self.opening = (await receive())["text"]
+        self.opening = await receive()
         self.messages.append({"role": "user", "content": [{"text": self.opening}]})
         # Events the browser doesn't use; the server keeps them to itself
-        await send({"type": "bidi_transcript_stream", "role": "assistant", "text": "Welcome!", "is_final": True})
-        await send({"type": "tool_use_stream", "current_tool_use": {"name": "show_item", "input": {}}})
+        await send({"type": "bidi_transcript_block", "role": "assistant", "transcript": "Welcome!", "content_id": "t1"})
+        await send({"type": "bidi_tool_use_blocks", "tool_uses": [{"toolUseId": "1", "name": "show_item", "input": {}}]})
         await send(agent_audio(GREETING))
         while True:
             event = await receive()
             self.inputs.append(event)
-            await send(agent_audio(base64.b64decode(event["audio"])))
+            await send(agent_audio(mic_audio(event)))
 
     async def stop(self):
         pass
@@ -143,10 +148,8 @@ def test_only_microphone_audio_reaches_the_agent(client):
                       "channels": 1})  # the old JSON audio: text frames are dropped, whatever they say
         ws.send_bytes(PCM)
         assert receive_until(ws, lambda f: isinstance(f, bytes)) == PCM
-    assert FakeAgent.instances[0].inputs == [{
-        "type": "bidi_audio_input", "audio": base64.b64encode(PCM).decode(), "format": "pcm",
-        "sample_rate": 16000, "channels": 1,
-    }]
+    # The raw bytes, as BidiAgent takes audio input
+    assert FakeAgent.instances[0].inputs == [{"audio_delta": {"format": "pcm", "source": {"bytes": PCM}}}]
 
 
 def test_40ms_audio_frames_reach_the_agent(client):
@@ -176,7 +179,7 @@ def test_interruptions_reach_the_browser(client, monkeypatch):
         async def run(self, inputs, outputs, invocation_state):
             await inputs[0]()
             await outputs[0](agent_audio(GREETING))
-            await outputs[0]({"type": "bidi_interruption", "reason": "user_speech"})
+            await outputs[0]({"type": "bidi_barge_in"})
             while True:
                 await inputs[0]()
 
@@ -255,7 +258,7 @@ def test_a_model_outage_mid_order_restarts_the_conversation_on_the_same_connecti
         async def run(self, inputs, outputs, invocation_state):
             if len(FakeAgent.instances) == 1:
                 self.session = invocation_state["session"]
-                self.opening = (await inputs[0]())["text"]
+                self.opening = await inputs[0]()
                 await outputs[0](agent_audio(b"hi"))
                 with self.session.lock:
                     self.session.order.add_item("cola", "Cola", 1, 900)
@@ -296,3 +299,18 @@ def test_an_idle_session_ends(client, monkeypatch):
         ended = receive_until(ws, event("CUSTOM", "session_ended"))
         assert ended["value"] == {"reason": main.IDLE_CLOSE_REASON}
     assert "s1" not in sessions._sessions
+
+
+def test_stop_conversation_asks_the_agent_to_end_the_conversation():
+    """Strands' bidi API dropped its built-in stop_conversation tool; ours cancels the agent."""
+    class Agent:
+        cancelled = False
+
+        def cancel(self):
+            self.cancelled = True
+
+    from types import SimpleNamespace
+    agent = Agent()
+    result = main.stop_conversation(tool_context=SimpleNamespace(agent=agent, invocation_state={}))
+    assert agent.cancelled
+    assert isinstance(result, str)
