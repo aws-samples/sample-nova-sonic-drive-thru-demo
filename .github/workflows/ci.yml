@@ -47,6 +47,7 @@ jobs:
       # The protocol types are generated from agent/protocol.py (via protocol.schema.json, which
       # the agent tests check); fail if messages.ts wasn't regenerated after a change
       - run: npm run gen:protocol && git diff --exit-code -- src/protocol
+      - run: npm run lint
       - run: npm run build  # includes the TypeScript type check
       - run: npm test
 

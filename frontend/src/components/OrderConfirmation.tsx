@@ -1,22 +1,22 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-import { useMemo } from 'react';
 import { useAppStore } from '../store';
 import { formatPrice } from '../utils/formatPrice';
 
 const CONFETTI_COLORS = ['#27ae60', '#e67e22', '#3498db', '#e74c3c', '#9b59b6', '#f1c40f'];
 
+// Scattered once, when the module loads: rendering must not call Math.random()
+const CONFETTI_PIECES = Array.from({ length: 20 }, (_, i) => ({
+  id: i,
+  left: `${Math.random() * 100 - 50}px`,
+  color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+  delay: `${Math.random() * 0.6}s`,
+  rotation: `${Math.random() * 360}deg`,
+}));
+
 function ConfettiPieces() {
-  const pieces = useMemo(() =>
-    Array.from({ length: 20 }, (_, i) => ({
-      id: i,
-      left: `${Math.random() * 100 - 50}px`,
-      color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
-      delay: `${Math.random() * 0.6}s`,
-      rotation: `${Math.random() * 360}deg`,
-    })),
-  []);
+  const pieces = CONFETTI_PIECES;
 
   return (
     <div className="confetti-container" aria-hidden="true">

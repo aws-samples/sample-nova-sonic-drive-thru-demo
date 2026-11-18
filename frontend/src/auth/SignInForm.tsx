@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 import { useState, type FormEvent } from 'react';
-import { useAuth } from './AuthContext';
+import { useAuth } from './useAuth';
 
 export function SignInForm() {
   const { signIn, loading, error } = useAuth();

@@ -92,7 +92,7 @@ export class VoiceSessionManager {
       });
     } catch (err: unknown) {
       useAppStore.getState().setMicPermission('denied');
-      throw new Error('Microphone access is required for voice ordering.');
+      throw new Error('Microphone access is required for voice ordering.', { cause: err });
     }
     useAppStore.getState().setMicPermission('granted');
 

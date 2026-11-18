@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: MIT-0
 
 import {
-  createContext,
-  useContext,
   useState,
   useEffect,
   useCallback,
@@ -16,27 +14,9 @@ import {
   getCurrentUser,
   fetchAuthSession,
 } from 'aws-amplify/auth';
+import { AuthContext, type AuthContextValue, type AuthState } from './useAuth';
 
-export interface AuthState {
-  authenticated: boolean;
-  userId: string | null;
-  loading: boolean;
-  error: string | null;
-}
 
-export interface AuthContextValue extends AuthState {
-  signIn: (username: string, password: string) => Promise<void>;
-  signOut: () => Promise<void>;
-  getJwtToken: () => Promise<string>;
-  getAwsCredentials: () => Promise<{
-    accessKeyId: string;
-    secretAccessKey: string;
-    sessionToken?: string;
-  }>;
-  refreshToken: () => Promise<string>;
-}
-
-const AuthContext = createContext<AuthContextValue | null>(null);
 
 const TOKEN_REFRESH_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes (tokens expire in 15 min)
 
@@ -200,12 +180,4 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
-}
-
-export function useAuth(): AuthContextValue {
-  const ctx = useContext(AuthContext);
-  if (!ctx) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return ctx;
 }
