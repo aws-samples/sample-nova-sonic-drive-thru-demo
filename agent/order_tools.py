@@ -17,8 +17,10 @@ import boto3
 from strands import ToolContext, tool
 
 try:
+    from agent import custom_burger
     from agent.session import Session, session_of
 except ModuleNotFoundError:
+    import custom_burger
     from session import Session, session_of
 
 logger = logging.getLogger(__name__)
@@ -170,41 +172,9 @@ def cancel_order(tool_context: ToolContext) -> dict:
 
 
 # --- Build-your-own burger ---
-# Prices in fils (100 fils = 1 AED). Mirrored in frontend App.tsx / BurgerBuilder.tsx and the
-# system prompt in main.py.
-_CUSTOM_BURGER_BASE_PRICE = 3300  # AED 33.00 for patty + bun
-PATTIES = ("beef patty", "chicken patty")
-_TOPPING_PRICES = {
-    # Cheese (+AED 4.00)
-    "american cheese": 400,
-    "cheddar cheese": 400,
-    "pepper jack cheese": 400,
-    "swiss cheese": 400,
-    # Premium toppings (+AED 6.00)
-    "bacon": 600,
-    "avocado": 600,
-    "fried egg": 600,
-    # Free toppings
-    "lettuce": 0,
-    "tomato": 0,
-    "onion": 0,
-    "pickles": 0,
-    "jalapeños": 0,
-    "mushrooms": 0,
-}
-TOPPINGS = tuple(_TOPPING_PRICES)
-SAUCES = ("ketchup", "mustard", "mayo", "bbq sauce", "chipotle mayo", "special sauce")  # all free
-
-
-def custom_burger_price(toppings) -> int:
-    """Price in fils of a custom burger with the given toppings.
-
-    The single price calculation for custom burgers: used for the builder on screen and for
-    the item added to the order. Unknown toppings add nothing; the tools reject them first.
-    """
-    return _CUSTOM_BURGER_BASE_PRICE + sum(
-        _TOPPING_PRICES.get(str(t).lower().strip(), 0) for t in (toppings or [])
-    )
+# The options and prices are defined once, in custom_burger.py.
+PATTIES, TOPPINGS, SAUCES = custom_burger.PATTIES, custom_burger.TOPPINGS, custom_burger.SAUCES
+custom_burger_price = custom_burger.price
 
 
 def _normalize(names, allowed: tuple, kind: str) -> tuple[list[str], str | None]:
@@ -238,13 +208,10 @@ def update_custom_burger(
     only what changed. The burger so far is kept until it is confirmed or cancelled.
 
     Args:
-        patty: "beef patty" or "chicken patty".
-        add_toppings: Toppings to add. Cheese (+4 dirhams): "american cheese", "cheddar cheese",
-            "pepper jack cheese", "swiss cheese". Premium (+6 dirhams): "bacon", "avocado", "fried egg".
-            Free: "lettuce", "tomato", "onion", "pickles", "jalapeños", "mushrooms".
+        patty: The patty, by its exact name from your instructions, e.g. "beef patty".
+        add_toppings: Toppings to add, by their exact names from your instructions, e.g. "cheddar cheese".
         remove_toppings: Toppings to take off.
-        add_sauces: Sauces to add (all free): "ketchup", "mustard", "mayo", "bbq sauce",
-            "chipotle mayo", "special sauce".
+        add_sauces: Sauces to add, by their exact names from your instructions, e.g. "bbq sauce".
         remove_sauces: Sauces to take off.
 
     Returns:

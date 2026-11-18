@@ -3,7 +3,7 @@
 
 """The protocol definition, and the generated schema the browser's types are built from."""
 
-from agent import menu_tools, order_tools, protocol
+from agent import custom_burger, menu_tools, order_tools, protocol
 from agent.tests.support import context, make_session
 
 MENU = {
@@ -42,3 +42,20 @@ def test_the_menu_event_carries_the_whole_menu():
     event = make_session(MENU).menu_event().model_dump()
     assert event["type"] == "CUSTOM" and event["name"] == "menu"
     assert event["value"]["menuItems"]["drinks"][0]["price"] == 900
+
+
+def test_the_screen_gets_the_same_burger_prices_the_tools_charge():
+    options = make_session(MENU).menu_event().value.customBurger
+    assert options.basePrice == custom_burger.price([])
+    for topping in options.toppings:
+        assert custom_burger.price([topping.name]) == options.basePrice + topping.price
+    assert options.patties == list(order_tools.PATTIES)
+    assert options.sauces == list(order_tools.SAUCES)
+    assert {t.name for t in options.toppings} == set(order_tools.TOPPINGS)
+
+
+def test_the_agent_is_told_every_option_and_price():
+    text = custom_burger.prompt_text()
+    for name in (*custom_burger.PATTIES, *custom_burger.TOPPINGS, *custom_burger.SAUCES):
+        assert name in text
+    assert "33 dirhams" in text and "+4 dirhams" in text and "+6 dirhams" in text

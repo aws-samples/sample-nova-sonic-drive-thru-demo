@@ -78,9 +78,24 @@ class MenuItem(_Model):
     sortOrder: int = 0
 
 
+class BurgerTopping(_Model):
+    name: str
+    price: Fils  # added to the base price; 0 for free toppings
+
+
+class CustomBurgerOptions(_Model):
+    """What a build-your-own burger can have, and what it costs (see custom_burger.py)."""
+
+    basePrice: Fils
+    patties: list[str]
+    toppings: list[BurgerTopping]
+    sauces: list[str]  # all free
+
+
 class Menu(_Model):
     categories: list[Category] = []
     menuItems: dict[str, list[MenuItem]] = {}  # categoryId -> items
+    customBurger: CustomBurgerOptions
 
 
 # --- Screen state ---

@@ -108,13 +108,14 @@ def is_retryable_model_error(error: BaseException) -> bool:
     return type(error).__name__ in RETRYABLE_MODEL_ERRORS
 
 try:
-    from agent import protocol, session as sessions
+    from agent import custom_burger, protocol, session as sessions
     from agent.menu_tools import get_recommendations, load_menu_data, show_category, show_item
     from agent.order_tools import (
         add_to_order, cancel_custom_burger, cancel_order, confirm_custom_burger, get_order_summary, place_order,
         remove_from_order, update_custom_burger,
     )
 except ModuleNotFoundError:
+    import custom_burger
     import protocol
     import session as sessions
     from menu_tools import get_recommendations, load_menu_data, show_category, show_item
@@ -158,7 +159,8 @@ RULES:
 
 BUILD YOUR OWN BURGER (itemId: custom-burger):
 Call update_custom_burger to start, then walk the customer through patty (beef or chicken), toppings and sauces, calling update_custom_burger with each choice. It prices the burger for you. When they're done, recap the burger and ask "Sound good, or want to change anything?" — only call confirm_custom_burger AFTER they confirm. If they change their mind, call cancel_custom_burger.
-Cheese +4 dirhams: american, cheddar, pepper jack, swiss. Premium +6 dirhams: bacon, avocado, fried egg. Free: lettuce, tomato, onion, pickles, jalapeños, mushrooms. Sauces free: ketchup, mustard, mayo, bbq sauce, chipotle mayo, special sauce.
+Use these exact names in update_custom_burger:
+{custom_burger}
 {current_order}"""
 
 
@@ -197,6 +199,7 @@ def _current_order(session: sessions.Session) -> str:
 def build_system_prompt(session: sessions.Session) -> str:
     return (SYSTEM_PROMPT_TEMPLATE
             .replace("{menu_reference}", _menu_reference(session.menu))
+            .replace("{custom_burger}", custom_burger.prompt_text())
             .replace("{current_order}", _current_order(session)))
 
 

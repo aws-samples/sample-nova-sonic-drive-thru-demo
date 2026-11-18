@@ -19,6 +19,7 @@ export interface Menu {
   menuItems: {
     [k: string]: MenuItem[];
   };
+  customBurger: CustomBurgerOptions;
 }
 export interface Category {
   categoryId: string;
@@ -38,6 +39,25 @@ export interface MenuItem {
   category: string;
   featured: boolean;
   sortOrder: number;
+}
+/**
+ * What a build-your-own burger can have, and what it costs (see custom_burger.py).
+ */
+export interface CustomBurgerOptions {
+  /**
+   * An amount in fils (100 fils = 1 AED).
+   */
+  basePrice: number;
+  patties: string[];
+  toppings: BurgerTopping[];
+  sauces: string[];
+}
+export interface BurgerTopping {
+  name: string;
+  /**
+   * An amount in fils (100 fils = 1 AED).
+   */
+  price: number;
 }
 export interface StateSnapshotEvent {
   type: 'STATE_SNAPSHOT';

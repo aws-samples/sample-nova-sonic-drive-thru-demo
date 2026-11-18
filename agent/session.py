@@ -24,9 +24,10 @@ from collections import OrderedDict
 from typing import Any, Callable
 
 try:
-    from agent import protocol
+    from agent import custom_burger, protocol
     from agent.order_state import OrderState
 except ModuleNotFoundError:
+    import custom_burger
     import protocol
     from order_state import OrderState
 
@@ -41,8 +42,9 @@ class Session:
 
     def __init__(self, session_id: str, menu: dict):
         self.session_id = session_id
-        # {"categories": [...], "menuItems": {categoryId: [item, ...]}}, checked against the protocol
-        self.menu = protocol.Menu.model_validate(menu).model_dump()
+        # {"categories": [...], "menuItems": {categoryId: [item, ...]}, "customBurger": {...}},
+        # checked against the protocol. The burger options always come from custom_burger.py.
+        self.menu = protocol.Menu.model_validate({**menu, "customBurger": custom_burger.OPTIONS}).model_dump()
         self.order = OrderState()
         self.screen: dict[str, Any] = {**EMPTY_SCREEN}
         # The build-your-own burger in progress: {"patty", "toppings", "sauces"}, or None.

@@ -6,6 +6,7 @@ import { render, screen } from '@testing-library/react';
 import { ItemDetailModal } from './ItemDetailModal';
 import { useAppStore } from '../store';
 import type { MenuItem } from '../types';
+import { CUSTOM_BURGER } from '../test/fixtures';
 
 const burger: MenuItem = {
   itemId: 'classic-burger',
@@ -23,7 +24,7 @@ let version = 0;
 
 function highlight(itemId: string | null) {
   const { applyMenu, applySnapshot, agentUI } = useAppStore.getState();
-  applyMenu({ categories: [], menuItems: { burgers: [burger] } });
+  applyMenu({ categories: [], menuItems: { burgers: [burger] }, customBurger: CUSTOM_BURGER });
   applySnapshot('test-epoch', ++version, {
     highlightedCategory: agentUI.highlightedCategory,
     highlightedItem: itemId,

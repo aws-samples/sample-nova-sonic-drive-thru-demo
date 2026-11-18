@@ -90,6 +90,24 @@
       "title": "BurgerBuilder",
       "type": "object"
     },
+    "BurgerTopping": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "price": {
+          "description": "An amount in fils (100 fils = 1 AED).",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "price"
+      ],
+      "title": "BurgerTopping",
+      "type": "object"
+    },
     "Category": {
       "additionalProperties": false,
       "properties": {
@@ -110,6 +128,42 @@
         "sortOrder"
       ],
       "title": "Category",
+      "type": "object"
+    },
+    "CustomBurgerOptions": {
+      "additionalProperties": false,
+      "description": "What a build-your-own burger can have, and what it costs (see custom_burger.py).",
+      "properties": {
+        "basePrice": {
+          "description": "An amount in fils (100 fils = 1 AED).",
+          "type": "integer"
+        },
+        "patties": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "toppings": {
+          "items": {
+            "$ref": "#/$defs/BurgerTopping"
+          },
+          "type": "array"
+        },
+        "sauces": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "basePrice",
+        "patties",
+        "toppings",
+        "sauces"
+      ],
+      "title": "CustomBurgerOptions",
       "type": "object"
     },
     "InterruptionEvent": {
@@ -150,11 +204,15 @@
           },
           "default": {},
           "type": "object"
+        },
+        "customBurger": {
+          "$ref": "#/$defs/CustomBurgerOptions"
         }
       },
       "required": [
         "categories",
-        "menuItems"
+        "menuItems",
+        "customBurger"
       ],
       "title": "Menu",
       "type": "object"

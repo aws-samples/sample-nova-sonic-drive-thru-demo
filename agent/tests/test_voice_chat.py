@@ -14,7 +14,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from agent import main, protocol, session as sessions
+from agent import custom_burger, main, protocol, session as sessions
 
 MENU = {
     "categories": [{"categoryId": "drinks", "name": "Drinks", "sortOrder": 1}],
@@ -110,7 +110,8 @@ def greeted(frame):
 def test_connect_sends_the_menu_and_screen_then_the_agent_greets(client):
     with client.websocket_connect(url("s1")) as ws:
         menu = receive_frame(ws)
-        assert menu == {"type": "CUSTOM", "name": "menu", "value": protocol.Menu.model_validate(MENU).model_dump()}
+        expected = protocol.Menu.model_validate({**MENU, "customBurger": custom_burger.OPTIONS}).model_dump()
+        assert menu == {"type": "CUSTOM", "name": "menu", "value": expected}
         snapshot = receive_frame(ws)
         assert snapshot["type"] == "STATE_SNAPSHOT"
         assert snapshot["version"] == 0
@@ -120,6 +121,8 @@ def test_connect_sends_the_menu_and_screen_then_the_agent_greets(client):
     [agent] = FakeAgent.instances
     assert agent.opening == main.GREETING_CUE
     assert "cola - Cola AED 9.00" in agent.system_prompt
+    assert custom_burger.prompt_text() in agent.system_prompt
+    assert "{custom_burger}" not in agent.system_prompt
     assert "CURRENT ORDER" not in agent.system_prompt
     assert agent.session.session_id == "s1"
 

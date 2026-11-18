@@ -26,19 +26,11 @@ const TOPPING_ICONS: Record<string, string> = {
   'special sauce': '✨',
 };
 
-// Add-on prices in fils (100 fils = 1 AED); mirrors _TOPPING_PRICES in agent/order_tools.py.
-const TOPPING_PRICES: Record<string, number> = {
-  'american cheese': 400,
-  'cheddar cheese': 400,
-  'pepper jack cheese': 400,
-  'swiss cheese': 400,
-  'bacon': 600,
-  'avocado': 600,
-  'fried egg': 600,
-};
-
 export function BurgerBuilder() {
   const builder = useAppStore((s) => s.agentUI.burgerBuilder);
+  // Add-on prices in fils, sent by the agent with the menu (agent/custom_burger.py)
+  const toppingPrices = useAppStore((s) => s.agentUI.customBurger?.toppings);
+  const priceOf = (topping: string) => toppingPrices?.find((t) => t.name === topping)?.price;
 
   if (!builder || !builder.active) return null;
 
@@ -93,7 +85,7 @@ export function BurgerBuilder() {
                   key={i}
                   icon={TOPPING_ICONS[t] || '•'}
                   label={t}
-                  price={TOPPING_PRICES[t]}
+                  price={priceOf(t)}
                 />
               ))}
               {builder.sauces.map((s, i) => (

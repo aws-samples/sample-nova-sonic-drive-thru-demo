@@ -10,8 +10,6 @@ import { createWebSocketClient, VoiceSessionManager } from './voice';
 import { getRuntimeConfig } from './config';
 import { formatPrice } from './utils/formatPrice';
 
-// Build-your-own base price in fils (100 fils = 1 AED); mirrors agent/order_tools.py.
-const CUSTOM_BURGER_BASE_PRICE = 3300;
 // How long the confirmation stays up after the agent ends a completed order, before the
 // screen returns to the welcome state for the next car.
 const CONFIRMATION_DISPLAY_MS = 8000;
@@ -25,6 +23,8 @@ export default function App() {
   const micPermission = useAppStore((s) => s.voice.micPermission);
   const orderConfirmed = useAppStore((s) => s.agentUI.orderConfirmed);
   const hasMenu = useAppStore((s) => s.agentUI.categories.length > 0);
+  // Sent by the agent with the menu, so the price shown is the price charged
+  const burgerBasePrice = useAppStore((s) => s.agentUI.customBurger?.basePrice ?? null);
 
   const debugMode = new URLSearchParams(window.location.search).has('debug');
 
@@ -177,7 +177,9 @@ export default function App() {
             }}
           >
             <div style={{ fontWeight: 600, fontSize: '0.9em', color: '#333' }}>or Build Your Own Burger</div>
-            <div style={{ marginTop: 6, fontSize: '0.75em', color: '#27ae60', fontWeight: 600 }}>From {formatPrice(CUSTOM_BURGER_BASE_PRICE)}</div>
+            {burgerBasePrice !== null && (
+              <div style={{ marginTop: 6, fontSize: '0.75em', color: '#27ae60', fontWeight: 600 }}>From {formatPrice(burgerBasePrice)}</div>
+            )}
             <div style={{ marginTop: 6, fontSize: '0.7em', color: '#888' }}>Just ask to build your own</div>
           </div>
         </div>

@@ -4,6 +4,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useAppStore } from './appStore';
 import type { ScreenState } from '../types';
+import { CUSTOM_BURGER } from '../test/fixtures';
 
 const screen = (overrides: Partial<ScreenState> = {}): ScreenState => ({
   highlightedCategory: null,
@@ -21,7 +22,7 @@ describe('agent screen state', () => {
 
   it('keeps the menu when a snapshot arrives', () => {
     const { applyMenu, applySnapshot } = useAppStore.getState();
-    applyMenu({ categories: [{ categoryId: 'drinks', name: 'Drinks', sortOrder: 1 }], menuItems: { drinks: [] } });
+    applyMenu({ categories: [{ categoryId: 'drinks', name: 'Drinks', sortOrder: 1 }], menuItems: { drinks: [] }, customBurger: CUSTOM_BURGER });
     applySnapshot('e1', 1, screen({ orderTotal: 900 }));
     const { agentUI } = useAppStore.getState();
     expect(agentUI.categories).toHaveLength(1);

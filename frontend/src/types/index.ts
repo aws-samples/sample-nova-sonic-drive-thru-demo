@@ -3,9 +3,9 @@
 
 // The menu and screen types come from the protocol, which is defined once in agent/protocol.py
 // and generated into ../protocol/messages.ts. Prices are integers in fils (1/100 AED).
-import type { BurgerBuilder, Menu, ScreenState } from '../protocol/messages';
+import type { BurgerBuilder, CustomBurgerOptions, Menu, ScreenState } from '../protocol/messages';
 
-export type { Category, MenuItem, OrderItem, ScreenState } from '../protocol/messages';
+export type { BurgerTopping, Category, CustomBurgerOptions, MenuItem, OrderItem, ScreenState } from '../protocol/messages';
 
 // The build-your-own burger in progress, as the agent shows it
 export type BurgerBuilderState = BurgerBuilder;
@@ -13,9 +13,9 @@ export type BurgerBuilderState = BurgerBuilder;
 // The menu: sent by the agent once per connection (CUSTOM "menu" event)
 export type MenuData = Menu;
 
-// Everything the agent shows: the menu, and the screen state it sends whole after every
-// change (STATE_SNAPSHOT event)
-export type AgentUIState = MenuData & ScreenState;
+// Everything the agent shows: the menu (with the burger options, null until it arrives), and
+// the screen state it sends whole after every change (STATE_SNAPSHOT event)
+export type AgentUIState = Omit<MenuData, 'customBurger'> & { customBurger: CustomBurgerOptions | null } & ScreenState;
 
 // Full application state
 export interface AppState {

@@ -21,6 +21,7 @@ interface AppActions {
 const initialAgentUI: AgentUIState = {
   categories: [],
   menuItems: {},
+  customBurger: null,
   highlightedCategory: null,
   highlightedItem: null,
   orderItems: [],
@@ -47,7 +48,9 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
   ...initialState,
 
   applyMenu: (menu) =>
-    set((s) => ({ agentUI: { ...s.agentUI, categories: menu.categories, menuItems: menu.menuItems } })),
+    set((s) => ({
+      agentUI: { ...s.agentUI, categories: menu.categories, menuItems: menu.menuItems, customBurger: menu.customBurger },
+    })),
 
   applySnapshot: (epoch, version, snapshot) => {
     const { sync } = get();

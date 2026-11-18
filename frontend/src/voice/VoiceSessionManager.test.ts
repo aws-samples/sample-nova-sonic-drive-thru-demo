@@ -6,6 +6,7 @@ import { PLAYBACK_LEAD_SECONDS, VoiceSessionManager } from './VoiceSessionManage
 import type { AgentCoreWebSocketClient } from './WebSocketClient';
 import type { ServerMessage } from '../protocol/messages';
 import { useAppStore } from '../store/appStore';
+import { CUSTOM_BURGER } from '../test/fixtures';
 
 /** 40 ms of the agent's voice, as one binary frame: 640 16-bit samples. */
 const agentAudio = () => new Int16Array(640).fill(1000).buffer;
@@ -202,7 +203,10 @@ describe('VoiceSessionManager reconnects', () => {
     await started(client);
     client.serverSends({
       type: 'CUSTOM', name: 'menu',
-      value: { categories: [{ categoryId: 'drinks', name: 'Drinks', sortOrder: 1 }], menuItems: { drinks: [] } },
+      value: {
+        categories: [{ categoryId: 'drinks', name: 'Drinks', sortOrder: 1 }], menuItems: { drinks: [] },
+        customBurger: CUSTOM_BURGER,
+      },
     });
     client.serverSends({
       type: 'STATE_SNAPSHOT', epoch: 'e1', version: 1,
@@ -214,6 +218,7 @@ describe('VoiceSessionManager reconnects', () => {
     const { agentUI } = useAppStore.getState();
     expect(agentUI.categories).toHaveLength(1);
     expect(agentUI.highlightedCategory).toBe('drinks');
+    expect(agentUI.customBurger?.basePrice).toBe(3300);
   });
 
   it('does not reconnect when the agent reports an error', async () => {
