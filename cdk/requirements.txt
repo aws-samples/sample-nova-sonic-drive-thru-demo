@@ -2,7 +2,6 @@
 # cdk-nag 3.x removed NagSuppressions, which the stacks import, so `pip install` on a clean
 # machine (CI, or deploy.sh from a fresh clone) produced an app that could not synthesize.
 aws-cdk-lib==2.264.0
-aws-cdk.aws-bedrock-agentcore-alpha==2.264.0a0
 cdk-nag==2.38.2
 constructs==10.8.1
 pytest>=7.0.0

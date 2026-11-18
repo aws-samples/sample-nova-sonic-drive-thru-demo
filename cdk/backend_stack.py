@@ -20,7 +20,7 @@ from aws_cdk import (
     aws_wafv2 as wafv2,
     custom_resources as cr,
 )
-import aws_cdk.aws_bedrock_agentcore_alpha as agentcore
+import aws_cdk.aws_bedrockagentcore as agentcore
 from cdk_nag import NagSuppressions
 from constructs import Construct
 
