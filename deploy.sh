@@ -26,6 +26,10 @@ cdk deploy BackendStack --outputs-file "$CDK_DIR/backend-outputs.json" --require
 echo ""
 echo "=== Step 3: Generate runtime-config.json from backend outputs ==="
 python3 "$SCRIPT_DIR/generate_config.py"
+# Rebuild so dist/ carries the new config: the step 1 build (needed to synthesize the CDK app)
+# copied the old public/runtime-config.json, which only matches when the backend IDs don't change.
+cd "$FRONTEND_DIR"
+npm run build
 
 echo ""
 echo "=== Step 4: Deploy frontend stack ==="
