@@ -13,6 +13,7 @@ from aws_cdk import (
     aws_lambda as lambda_,
     aws_s3 as s3,
     aws_s3_deployment as s3deploy,
+    aws_certificatemanager as acm,
     aws_cloudfront as cloudfront,
     aws_cloudfront_origins as origins,
     aws_cognito as cognito,
@@ -30,6 +31,23 @@ from constructs import Construct
 # (Nova 2.5 Sonic, used since Nov 2026, is available on demand in both.)
 # Override with `cdk deploy -c bedrockRegion=<region>`.
 DEFAULT_BEDROCK_REGION = "us-west-2"
+
+
+def custom_domain(node) -> tuple[str, str] | None:
+    """The site's own domain and its ACM certificate, from `-c domainName=... -c certificateArn=...`.
+
+    With them, CloudFront serves the site on that domain and refuses anything older than
+    TLS 1.2. Without them, it uses its default *.cloudfront.net certificate, whose minimum is
+    fixed at TLSv1. CloudFront only accepts certificates from us-east-1.
+    """
+    domain, certificate_arn = node.try_get_context("domainName"), node.try_get_context("certificateArn")
+    if not domain and not certificate_arn:
+        return None
+    if not (domain and certificate_arn):
+        raise ValueError("Set both domainName and certificateArn, or neither")
+    if not certificate_arn.startswith("arn:aws:acm:us-east-1:"):
+        raise ValueError(f"CloudFront needs an ACM certificate in us-east-1, got {certificate_arn}")
+    return domain, certificate_arn
 
 
 class BackendStack(Stack):
@@ -281,6 +299,12 @@ class BackendStack(Stack):
             ),
         )
 
+        site_domain = custom_domain(self.node)
+        tls_settings = {} if site_domain is None else {
+            "domain_names": [site_domain[0]],
+            "certificate": acm.Certificate.from_certificate_arn(self, "SiteCertificate", site_domain[1]),
+            "minimum_protocol_version": cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
+        }
         self.distribution = cloudfront.Distribution(
             self, "FrontendDistribution",
             default_behavior=cloudfront.BehaviorOptions(
@@ -291,7 +315,7 @@ class BackendStack(Stack):
                 response_headers_policy=self.security_headers,
             ),
             default_root_object="index.html",
-            minimum_protocol_version=cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
+            **tls_settings,
             web_acl_id=self.web_acl.attr_arn,
             enable_logging=True,
             log_bucket=self.cf_logs_bucket,
@@ -379,6 +403,10 @@ class BackendStack(Stack):
         cdk.CfnOutput(self, "HostingBucketName", value=self.hosting_bucket.bucket_name)
         cdk.CfnOutput(self, "DistributionId", value=self.distribution.distribution_id)
         cdk.CfnOutput(self, "DistributionDomainName", value=self.distribution.distribution_domain_name)
+        # Where the site is served: the custom domain if there is one (point its DNS at
+        # DistributionDomainName), otherwise CloudFront's own domain
+        cdk.CfnOutput(self, "SiteDomainName",
+                      value=site_domain[0] if site_domain else self.distribution.distribution_domain_name)
         cdk.CfnOutput(self, "UserPoolId", value=self.user_pool.user_pool_id)
         cdk.CfnOutput(self, "UserPoolClientId", value=self.user_pool_client.user_pool_client_id)
         cdk.CfnOutput(self, "AgentRuntimeId", value=self.agent_runtime.agent_runtime_id)
@@ -404,7 +432,7 @@ class BackendStack(Stack):
             [
                 {"id": "AwsSolutions-CFR1", "reason": "Geo restrictions not required for this demo application."},
                 {"id": "AwsSolutions-CFR7", "reason": "Using OAI with S3BucketOrigin; OAC migration is planned but OAI still provides secure S3 access."},
-                {"id": "AwsSolutions-CFR4", "reason": "Distribution uses the default CloudFront viewer certificate which enforces TLSv1 minimum. A custom domain with ACM certificate is required to enforce TLSv1.2; not applicable for this demo."},
+                *([] if site_domain else [{"id": "AwsSolutions-CFR4", "reason": "No custom domain configured, so the distribution uses the default CloudFront certificate, whose TLSv1 minimum can't be raised. Deploy with -c domainName=... -c certificateArn=... to require TLS 1.2."}]),
             ],
         )
 

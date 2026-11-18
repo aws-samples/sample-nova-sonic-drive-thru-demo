@@ -134,7 +134,7 @@ def _websocket_handshake_status(host: str, path: str) -> int:
 def main() -> int:
     with open(OUTPUTS_FILE) as f:
         outputs = json.load(f)["BackendStack"]
-    site = f"https://{outputs['DistributionDomainName']}"
+    site = f"https://{outputs.get('SiteDomainName') or outputs['DistributionDomainName']}"
     runtime_arn = outputs["AgentRuntimeArn"]
     region = runtime_arn.split(":")[3]
     agent_host = f"bedrock-agentcore.{region}.amazonaws.com"

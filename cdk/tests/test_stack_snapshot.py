@@ -213,6 +213,39 @@ class TestAgentRuntime:
             assert "aws-opentelemetry-distro" in f.read()
 
 
+
+class TestCustomDomain:
+    CERT = "arn:aws:acm:us-east-1:123456789012:certificate/0f0e0d0c-0000-1111-2222-333344445555"
+
+    def stack(self, **context):
+        return Template.from_stack(BackendStack(cdk.App(context=context), "DomainStack", env=ENV))
+
+    def test_a_custom_domain_requires_tls_1_2(self):
+        template = self.stack(domainName="order.example.com", certificateArn=self.CERT)
+        template.has_resource_properties("AWS::CloudFront::Distribution", {
+            "DistributionConfig": Match.object_like({
+                "Aliases": ["order.example.com"],
+                "ViewerCertificate": Match.object_like({
+                    "AcmCertificateArn": self.CERT, "MinimumProtocolVersion": "TLSv1.2_2021",
+                }),
+            }),
+        })
+        template.has_output("SiteDomainName", {"Value": "order.example.com"})
+
+    def test_without_one_the_site_is_served_on_cloudfronts_domain(self, template):
+        template.has_resource_properties("AWS::CloudFront::Distribution", {
+            "DistributionConfig": Match.object_like({"Aliases": Match.absent()}),
+        })
+
+    @pytest.mark.parametrize("context", [
+        {"domainName": "order.example.com"},  # no certificate
+        {"domainName": "order.example.com", "certificateArn": CERT.replace("us-east-1", "eu-west-1")},
+    ])
+    def test_an_incomplete_or_wrong_region_setup_fails_at_synth(self, context):
+        with pytest.raises(ValueError):
+            self.stack(**context)
+
+
 class TestFrontendStack:
     def test_frontend_deploy_does_not_prune_the_food_images(self, frontend_template):
         """The hosting bucket is shared with the images BackendStack uploads under images/."""

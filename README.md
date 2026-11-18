@@ -57,6 +57,14 @@ This runs five steps:
 4. Deploys FrontendStack (uploads to S3, invalidates CloudFront)
 5. Runs `smoke_test.py` against the live site
 
+By default the site is served on CloudFront's own `*.cloudfront.net` domain, whose certificate allows TLS versions down to 1.0, and CloudFront doesn't let you raise that minimum. To serve it on your own domain and require TLS 1.2, request an ACM certificate for the domain in **us-east-1** (CloudFront only uses certificates from there), then deploy with both set:
+
+```bash
+DOMAIN_NAME=order.example.com CERTIFICATE_ARN=arn:aws:acm:us-east-1:<account>:certificate/<id> ./deploy.sh
+```
+
+Then point the domain's DNS at the `DistributionDomainName` output (a CNAME, or a Route 53 alias record). The smoke test checks the custom domain, so run it again with `python3 smoke_test.py` once DNS resolves.
+
 The smoke test checks what a browser actually hits, which a healthy CloudFormation stack doesn't guarantee: the Content-Security-Policy allows the Cognito and agent endpoints, `runtime-config.json` matches the stack, every menu image is served as an image, and the agent WebSocket rejects unauthenticated clients. Run it on its own any time with `python3 smoke_test.py`.
 
 ### Step by step

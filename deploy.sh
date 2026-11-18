@@ -3,10 +3,22 @@ set -euo pipefail
 
 # Deploy the Drive-Thru Voice Ordering system.
 # Usage: ./deploy.sh
+#
+# To serve the site on your own domain and require TLS 1.2, set both (the certificate must be
+# in ACM in us-east-1, as CloudFront requires), then point the domain's DNS at the
+# DistributionDomainName output:
+#   DOMAIN_NAME=order.example.com CERTIFICATE_ARN=arn:aws:acm:us-east-1:...:certificate/... ./deploy.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CDK_DIR="$SCRIPT_DIR/cdk"
 FRONTEND_DIR="$SCRIPT_DIR/frontend"
+
+# Passed to both deploys: deploying FrontendStack redeploys BackendStack, which it depends on
+CONTEXT_ARGS=()
+if [ -n "${DOMAIN_NAME:-}" ] || [ -n "${CERTIFICATE_ARN:-}" ]; then
+  CONTEXT_ARGS=(-c "domainName=${DOMAIN_NAME:?set DOMAIN_NAME and CERTIFICATE_ARN together}" \
+                -c "certificateArn=${CERTIFICATE_ARN:?set DOMAIN_NAME and CERTIFICATE_ARN together}")
+fi
 
 echo "=== Step 1: Build frontend ==="
 cd "$FRONTEND_DIR"
@@ -21,7 +33,7 @@ if [ -d ".venv" ]; then
   source .venv/bin/activate
 fi
 pip install -q -r requirements.txt
-cdk deploy BackendStack --outputs-file "$CDK_DIR/backend-outputs.json" --require-approval never
+cdk deploy BackendStack ${CONTEXT_ARGS[@]+"${CONTEXT_ARGS[@]}"} --outputs-file "$CDK_DIR/backend-outputs.json" --require-approval never
 
 echo ""
 echo "=== Step 3: Generate runtime-config.json from backend outputs ==="
@@ -39,7 +51,7 @@ cd "$CDK_DIR"
 BUCKET_NAME=$(python3 -c "import json; d=json.load(open('backend-outputs.json')); print(d['BackendStack']['HostingBucketName'])")
 DIST_ID=$(python3 -c "import json; d=json.load(open('backend-outputs.json')); print(d['BackendStack']['DistributionId'])")
 
-cdk deploy FrontendStack \
+cdk deploy FrontendStack ${CONTEXT_ARGS[@]+"${CONTEXT_ARGS[@]}"} \
   --context hostingBucketName="$BUCKET_NAME" \
   --context distributionId="$DIST_ID" \
   --require-approval never
@@ -52,7 +64,7 @@ python3 "$SCRIPT_DIR/smoke_test.py"
 
 echo ""
 echo "=== Done! ==="
-DOMAIN=$(python3 -c "import json; d=json.load(open('backend-outputs.json')); print(d['BackendStack']['DistributionDomainName'])")
+DOMAIN=$(python3 -c "import json; d=json.load(open('backend-outputs.json'))['BackendStack']; print(d.get('SiteDomainName') or d['DistributionDomainName'])")
 echo "App URL: https://$DOMAIN"
 echo ""
 echo "Create a Cognito user to sign in:"
