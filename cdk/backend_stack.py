@@ -3,6 +3,7 @@
 
 """Backend stack: DynamoDB, S3, CloudFront, Cognito, AgentCore Runtime, seed data."""
 
+import hashlib
 import json
 import os
 import aws_cdk as cdk
@@ -144,7 +145,9 @@ class BackendStack(Stack):
         cdk.CustomResource(
             self, "SeedMenuData",
             service_token=seed_provider.service_token,
-            properties={"DataHash": str(hash(json.dumps(menu_data)))},
+            # A content hash, so the seed only runs again when the menu changes. (Python's hash()
+            # is randomized per process, which re-ran it, overwriting the table, on every deploy.)
+            properties={"DataHash": hashlib.sha256(json.dumps(menu_data, sort_keys=True).encode()).hexdigest()},
         )
 
         # --- Upload Food Images ---

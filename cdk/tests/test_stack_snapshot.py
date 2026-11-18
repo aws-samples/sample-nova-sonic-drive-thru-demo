@@ -214,6 +214,19 @@ class TestAgentRuntime:
 
 
 
+def test_the_menu_seed_hash_is_the_same_in_every_process():
+    """hash() differs per process, so the seed re-ran and overwrote the menu table on every deploy."""
+    import subprocess
+    code = ("import aws_cdk as cdk, json; from aws_cdk.assertions import Template; "
+            "from backend_stack import BackendStack; "
+            "t = Template.from_stack(BackendStack(cdk.App(), 'S', env=cdk.Environment(account='123456789012', region='us-east-1'))); "
+            "print([r['Properties']['DataHash'] for r in t.find_resources('AWS::CloudFormation::CustomResource').values()])")
+    cdk_dir = os.path.join(REPO_ROOT, "cdk")
+    runs = {subprocess.run([sys.executable, "-c", code], cwd=cdk_dir, capture_output=True, text=True, check=True).stdout
+            for _ in range(2)}
+    assert len(runs) == 1, runs
+
+
 class TestCustomDomain:
     CERT = "arn:aws:acm:us-east-1:123456789012:certificate/0f0e0d0c-0000-1111-2222-333344445555"
 
