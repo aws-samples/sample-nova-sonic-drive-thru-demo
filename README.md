@@ -175,6 +175,21 @@ CI fails if either file is out of date.
 
 The CDK tests include regression checks for problems that only appear after deploying: an invalid Content-Security-Policy, the frontend deploy deleting the menu images, CloudFront serving missing files as the app page, open sign-up, and the agent's model drifting from its IAM grant.
 
+## Observability
+
+- **Traces.** The agent runs under the AWS Distro for OpenTelemetry (`opentelemetry-instrument` in `agent/Dockerfile`), so Strands' model and tool spans, and the WebSocket and DynamoDB calls, appear in AgentCore Observability in the CloudWatch console, alongside the runtime's own spans (`tracing_enabled` in `BackendStack`). This needs CloudWatch Transaction Search turned on in the account, once.
+- **Metrics.** The agent writes CloudWatch metrics as Embedded Metric Format lines in its logs, so no extra permissions are involved. They're in the `DriveThru/VoiceAgent` namespace:
+
+| Metric | Meaning |
+|--------|---------|
+| `ResponseLatency` (ms) | From the customer finishing an utterance to the agent's first audio in reply |
+| `ConnectionsEnded` (count, by `Reason`) | Why a connection ended: `order-complete`, `idle-timeout`, `conversation-ended`, `agent-error`, or `disconnected`/`replaced` for a connection whose session can resume |
+| `ConnectionDuration` (s) | How long each connection lasted |
+| `ModelRestarts` (count) | Nova Sonic streams that failed and were restarted mid-conversation |
+| `DroppedFrames` (count) | Browser frames rejected for size, rate or format |
+
+None of them carry conversation content. Spans can: Strands records model and tool inputs on its spans, so anyone who can read the account's `aws/spans` log group can read what customers ordered.
+
 ## Agent Tools
 
 The menu is in the agent's instructions and on screen from the start, so there is no tool to load it. Only these tools change the screen, and only the server sets prices.

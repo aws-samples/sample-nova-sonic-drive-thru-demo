@@ -201,6 +201,17 @@ class TestAgentRuntime:
         assert (f"arn:aws:bedrock:{DEFAULT_BEDROCK_REGION}::foundation-model/{model_id}"
                 in json.dumps(template_json))
 
+    def test_runtime_traces_go_to_xray_and_the_agent_runs_under_adot(self, template):
+        """Traces need both: the runtime's delivery to X-Ray, and ADOT in the agent's container."""
+        template.has_resource_properties("AWS::Logs::DeliveryDestination", {"DeliveryDestinationType": "XRAY"})
+        template.has_resource_properties("AWS::BedrockAgentCore::Runtime", {
+            "EnvironmentVariables": Match.object_like({"OTEL_SERVICE_NAME": "DriveThruVoiceAgent"}),
+        })
+        with open(os.path.join(REPO_ROOT, "agent", "Dockerfile")) as f:
+            assert '"opentelemetry-instrument"' in f.read()
+        with open(os.path.join(REPO_ROOT, "agent", "requirements.txt")) as f:
+            assert "aws-opentelemetry-distro" in f.read()
+
 
 class TestFrontendStack:
     def test_frontend_deploy_does_not_prune_the_food_images(self, frontend_template):

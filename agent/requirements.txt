@@ -11,6 +11,8 @@ smithy-json==0.3.0
 smithy-aws-event-stream==0.3.0
 aws-sdk-signers==0.3.1
 pydantic==2.14.3
+# AWS Distro for OpenTelemetry: sends Strands' and FastAPI's spans to AgentCore Observability
+aws-opentelemetry-distro==0.22.0
 boto3>=1.35.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0

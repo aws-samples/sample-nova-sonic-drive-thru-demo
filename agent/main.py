@@ -115,7 +115,7 @@ def stop_conversation(tool_context: ToolContext) -> str:
     return "Ending the conversation."
 
 try:
-    from agent import custom_burger, protocol, session as sessions
+    from agent import custom_burger, metrics, protocol, session as sessions
     from agent.menu_tools import get_recommendations, load_menu_data, show_category, show_item
     from agent.order_tools import (
         add_to_order, cancel_custom_burger, cancel_order, confirm_custom_burger, get_order_summary, place_order,
@@ -123,6 +123,7 @@ try:
     )
 except ModuleNotFoundError:
     import custom_burger
+    import metrics
     import protocol
     import session as sessions
     from menu_tools import get_recommendations, load_menu_data, show_category, show_item
@@ -261,15 +262,19 @@ async def voice_chat(websocket: WebSocket) -> None:
     agent = None
     session = None
     end_reason = None
+    outcome = "disconnected"  # what the ConnectionsEnded metric records, unless the session ends
+    connected_at = time.monotonic()
+    response_timer = metrics.ResponseTimer()
 
     # --- Per-connection rate limiter ---
     byte_budget = TokenBucket(RATE_LIMIT_BYTES_PER_SECOND, RATE_LIMIT_BURST_BYTES)
     message_budget = TokenBucket(RATE_LIMIT_MESSAGES_PER_SECOND, RATE_LIMIT_BURST_MESSAGES)
-    dropped = {"count": 0, "logged_at": 0.0}
+    dropped = {"count": 0, "logged_at": 0.0, "total": 0}
 
     def note_dropped(why: str) -> None:
         """Log dropped messages at most once a second, rather than once per frame."""
         dropped["count"] += 1
+        dropped["total"] += 1
         now = time.monotonic()
         if now - dropped["logged_at"] >= 1.0:
             logger.warning("Dropped %d incoming message(s): %s", dropped["count"], why)
@@ -345,13 +350,19 @@ async def voice_chat(websocket: WebSocket) -> None:
                 return
             if event.get("type") in _ACTIVITY_EVENT_TYPES:
                 session.mark_activity()
+            if event.get("type") == "bidi_transcript_block" and event.get("role") == "user":
+                response_timer.customer_finished()
             if event.get("type") == "bidi_audio_delta":
                 heard_since_restart = True
+                latency = response_timer.agent_spoke()
+                if latency is not None:
+                    metrics.emit({metrics.RESPONSE_LATENCY: latency})
                 if event.get("sample_rate", protocol.AUDIO_FORMAT.sampleRate) != protocol.AUDIO_FORMAT.sampleRate:
                     note_dropped(f"agent audio at {event.get('sample_rate')} Hz, not the protocol's rate")
                     return
                 await session.send_audio(base64.b64decode(event["audio"]), websocket=websocket)
             elif event.get("type") == "bidi_barge_in":  # the customer spoke over the agent
+                response_timer.interrupted()
                 await session.send(protocol.InterruptionEvent(reason="user_speech"), websocket=websocket)
 
         async def idle_watchdog() -> str | None:
@@ -386,6 +397,7 @@ async def voice_chat(websocket: WebSocket) -> None:
                 await asyncio.gather(agent_task, return_exceptions=True)
                 if end_reason is None:
                     logger.info("Connection replaced by a newer one: sessionId=%s", session_id)
+                    outcome = "replaced"
                     return  # the session lives on in the new connection
                 logger.info("Ending session: reason=%s after %.0fs of quiet", end_reason,
                             time.monotonic() - session.last_activity)
@@ -403,6 +415,7 @@ async def voice_chat(websocket: WebSocket) -> None:
                 raise error  # client disconnects and errors go to the handlers below
 
             # A transient model failure: carry on the same conversation on a new model stream
+            metrics.emit({metrics.MODEL_RESTARTS: 1})
             logger.warning("Model stream failed, restarting it (%d/%d): sessionId=%s: %s: %s",
                            restarts + 1, MAX_MODEL_RESTARTS, session_id, type(error).__name__, error)
             # (run() has already stopped the failed agent and its model stream)
@@ -430,6 +443,10 @@ async def voice_chat(websocket: WebSocket) -> None:
             except Exception:
                 pass  # the socket is already gone
     finally:
+        metrics.emit({metrics.CONNECTIONS_ENDED: 1}, Reason=end_reason or outcome)
+        metrics.emit({metrics.CONNECTION_DURATION: time.monotonic() - connected_at})
+        if dropped["total"]:
+            metrics.emit({metrics.DROPPED_FRAMES: dropped["total"]})
         if session is not None:
             session.detach(websocket)
             if end_reason is not None:

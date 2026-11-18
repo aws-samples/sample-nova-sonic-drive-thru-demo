@@ -352,8 +352,12 @@ class BackendStack(Stack):
                 "IMAGES_BUCKET_NAME": self.images_bucket.bucket_name,
                 "AWS_REGION": self.region,
                 "BEDROCK_REGION": bedrock_region,  # read by agent/main.py for the Nova Sonic client
+                "OTEL_SERVICE_NAME": "DriveThruVoiceAgent",  # names the agent in AgentCore Observability
             },
             description="Drive-thru voice ordering agent powered by Nova Sonic",
+            # The runtime's own spans go to X-Ray (CloudWatch Transaction Search), next to the
+            # agent's spans from ADOT (see agent/Dockerfile)
+            tracing_enabled=True,
         )
 
         self.agent_runtime.role.add_to_policy(iam.PolicyStatement(

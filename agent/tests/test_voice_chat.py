@@ -314,3 +314,32 @@ def test_stop_conversation_asks_the_agent_to_end_the_conversation():
     result = main.stop_conversation(tool_context=SimpleNamespace(agent=agent, invocation_state={}))
     assert agent.cancelled
     assert isinstance(result, str)
+
+
+def test_the_handler_reports_latency_and_how_the_connection_ended(client, capsys, monkeypatch):
+    monkeypatch.setattr(main, "IDLE_TIMEOUT_SECONDS", 0.5)
+
+    class Replies(FakeAgent):
+        async def run(self, inputs, outputs, invocation_state):
+            await inputs[0]()
+            await outputs[0](agent_audio(GREETING))  # the greeting isn't a reply: no latency
+            await outputs[0]({"type": "bidi_transcript_block", "role": "user", "transcript": "A cola", "content_id": "u"})
+            await outputs[0](agent_audio(GREETING))
+            await outputs[0](agent_audio(GREETING))
+            while True:
+                await inputs[0]()
+
+    monkeypatch.setattr(main, "BidiAgent", Replies)
+    with client.websocket_connect(url("s1")) as ws:
+        ws.send_bytes(b"\x00\x01" * 3)  # three whole samples: audio
+        ws.send_bytes(b"\x00")  # half a sample: dropped, and counted
+        receive_until(ws, event("CUSTOM", "session_ended"), limit=40)
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith('{"_aws"')]
+    by_metric = {}
+    for line in lines:
+        for m in line["_aws"]["CloudWatchMetrics"][0]["Metrics"]:
+            by_metric.setdefault(m["Name"], []).append(line)
+    assert len(by_metric["ResponseLatency"]) == 1  # one reply, timed once
+    assert [line["Reason"] for line in by_metric["ConnectionsEnded"]] == [main.IDLE_CLOSE_REASON]
+    assert by_metric["DroppedFrames"][0]["DroppedFrames"] == 1
+    assert len(by_metric["ConnectionDuration"]) == 1
