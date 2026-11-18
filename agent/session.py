@@ -11,46 +11,29 @@ Tools reach the session through the Strands tool context (see `session_of`), so 
 lives in module globals. Tools run in worker threads, in parallel, so every change to the
 session's state happens under `session.lock`.
 
-Messages to the browser follow the shape of AG-UI events:
-- CUSTOM "menu": the whole menu, once per connection.
-- STATE_SNAPSHOT: the whole screen state, with an epoch (one per Session) and a version (one
-  per change). The browser ignores a snapshot older than the one it is showing.
-- CUSTOM "session_ended": why the server is ending the session, just before it closes.
+The messages to the browser are defined in protocol.py: JSON text frames for the menu, screen
+state and session events, and binary frames for the agent's voice.
 """
 
 import asyncio
-import json
 import logging
 import threading
 import time
 import uuid
 from collections import OrderedDict
-from decimal import Decimal
 from typing import Any, Callable
 
 try:
+    from agent import protocol
     from agent.order_state import OrderState
 except ModuleNotFoundError:
+    import protocol
     from order_state import OrderState
 
 logger = logging.getLogger(__name__)
 
-# Everything the screen shows apart from the menu. Only the tools change it.
-EMPTY_SCREEN: dict[str, Any] = {
-    "highlightedCategory": None,
-    "highlightedItem": None,
-    "orderItems": [],
-    "orderTotal": 0,
-    "orderConfirmed": False,
-    "orderNumber": None,
-    "burgerBuilder": None,
-}
-
-
-def _json_default(obj):
-    if isinstance(obj, Decimal):
-        return int(obj) if obj == int(obj) else float(obj)
-    return str(obj)
+# Everything the screen shows apart from the menu (protocol.ScreenState). Only the tools change it.
+EMPTY_SCREEN: dict[str, Any] = protocol.ScreenState().model_dump()
 
 
 class Session:
@@ -58,7 +41,8 @@ class Session:
 
     def __init__(self, session_id: str, menu: dict):
         self.session_id = session_id
-        self.menu = menu  # {"categories": [...], "menuItems": {categoryId: [item, ...]}}
+        # {"categories": [...], "menuItems": {categoryId: [item, ...]}}, checked against the protocol
+        self.menu = protocol.Menu.model_validate(menu).model_dump()
         self.order = OrderState()
         self.screen: dict[str, Any] = {**EMPTY_SCREEN}
         # The build-your-own burger in progress: {"patty", "toppings", "sauces"}, or None.
@@ -94,27 +78,27 @@ class Session:
         return None, None
 
     def update_screen(self, **fields) -> None:
-        """Change what the screen shows and send the new state to the browser."""
-        unknown = set(fields) - set(EMPTY_SCREEN)
-        if unknown:
-            raise ValueError(f"not screen fields: {sorted(unknown)}")
+        """Change what the screen shows and send the new state to the browser.
+
+        Raises ValueError (a pydantic ValidationError) if the new state doesn't fit
+        protocol.ScreenState, e.g. an unknown field; the screen is then left as it was.
+        """
         with self.lock:
-            self.screen.update(fields)
+            screen = protocol.ScreenState.model_validate({**self.screen, **fields})
+            self.screen = screen.model_dump()
             self.version += 1
             # Posted while holding the lock, so snapshots are sent in version order
-            self.post(self.snapshot_event())
+            self.post(self._snapshot_event(screen))
 
-    def snapshot_event(self) -> dict:
+    def snapshot_event(self) -> protocol.StateSnapshotEvent:
         with self.lock:
-            return {
-                "type": "STATE_SNAPSHOT",
-                "epoch": self.epoch,
-                "version": self.version,
-                "snapshot": json.loads(json.dumps(self.screen, default=_json_default)),  # a deep copy
-            }
+            return self._snapshot_event(protocol.ScreenState.model_validate(self.screen))
 
-    def menu_event(self) -> dict:
-        return {"type": "CUSTOM", "name": "menu", "value": self.menu}
+    def _snapshot_event(self, screen: protocol.ScreenState) -> protocol.StateSnapshotEvent:
+        return protocol.StateSnapshotEvent(epoch=self.epoch, version=self.version, snapshot=screen)
+
+    def menu_event(self) -> protocol.MenuEvent:
+        return protocol.MenuEvent(value=protocol.Menu.model_validate(self.menu))
 
     # --- Connection ---
 
@@ -135,20 +119,30 @@ class Session:
     def is_attached(self, websocket) -> bool:
         return self._ws is websocket
 
-    async def send(self, event: dict, websocket=None) -> None:
-        """Send an event to the browser. Every write to the socket goes through here.
+    async def send(self, event: protocol.ServerEvent, websocket=None) -> None:
+        """Send a message to the browser, as a JSON text frame.
 
-        With `websocket`, the event is dropped unless that connection is still the current
+        With `websocket`, the message is dropped unless that connection is still the current
         one, so an agent that is shutting down can't talk into its replacement's connection.
         """
+        await self._write(event.model_dump_json(), websocket)
+
+    async def send_audio(self, pcm: bytes, websocket=None) -> None:
+        """Send the agent's voice to the browser, as a binary frame of protocol.AUDIO_FORMAT audio."""
+        await self._write(pcm, websocket)
+
+    async def _write(self, frame: str | bytes, websocket) -> None:
+        """Every write to the socket goes through here."""
         ws, lock = self._ws, self._send_lock
         if ws is None or lock is None or (websocket is not None and ws is not websocket):
             return
-        text = json.dumps(event, default=_json_default)
         async with lock:  # one frame at a time: concurrent writes can interleave
-            await ws.send_text(text)
+            if isinstance(frame, bytes):
+                await ws.send_bytes(frame)
+            else:
+                await ws.send_text(frame)
 
-    def post(self, event: dict) -> None:
+    def post(self, event: protocol.ServerEvent) -> None:
         """Queue an event for the browser from any thread (tools run in worker threads)."""
         loop = self._loop
         if loop is None or loop.is_closed():

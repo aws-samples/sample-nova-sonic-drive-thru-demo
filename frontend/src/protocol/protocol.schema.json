@@ -1,0 +1,418 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Generated from agent/protocol.py by `python -m agent.protocol`. Do not edit.",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/MenuEvent"
+    },
+    {
+      "$ref": "#/$defs/StateSnapshotEvent"
+    },
+    {
+      "$ref": "#/$defs/SessionEndedEvent"
+    },
+    {
+      "$ref": "#/$defs/InterruptionEvent"
+    }
+  ],
+  "description": "One JSON text frame from the server.",
+  "title": "ServerMessage",
+  "$defs": {
+    "AudioFormat": {
+      "additionalProperties": false,
+      "description": "The format of every binary frame, in both directions. Nova Sonic is configured for it.",
+      "properties": {
+        "sampleRate": {
+          "const": 16000,
+          "default": 16000,
+          "type": "integer"
+        },
+        "channels": {
+          "const": 1,
+          "default": 1,
+          "type": "integer"
+        },
+        "encoding": {
+          "const": "pcm_s16le",
+          "default": "pcm_s16le",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sampleRate",
+        "channels",
+        "encoding"
+      ],
+      "title": "AudioFormat",
+      "type": "object"
+    },
+    "BurgerBuilder": {
+      "additionalProperties": false,
+      "description": "The build-your-own burger in progress, priced by the server.",
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "patty": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "toppings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "sauces": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "price": {
+          "description": "An amount in fils (100 fils = 1 AED).",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "active",
+        "patty",
+        "toppings",
+        "sauces",
+        "price"
+      ],
+      "title": "BurgerBuilder",
+      "type": "object"
+    },
+    "Category": {
+      "additionalProperties": false,
+      "properties": {
+        "categoryId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "sortOrder": {
+          "default": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "categoryId",
+        "name",
+        "sortOrder"
+      ],
+      "title": "Category",
+      "type": "object"
+    },
+    "InterruptionEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "bidi_interruption",
+          "default": "bidi_interruption",
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "reason"
+      ],
+      "title": "InterruptionEvent",
+      "type": "object"
+    },
+    "Menu": {
+      "additionalProperties": false,
+      "properties": {
+        "categories": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Category"
+          },
+          "type": "array"
+        },
+        "menuItems": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/MenuItem"
+            },
+            "type": "array"
+          },
+          "default": {},
+          "type": "object"
+        }
+      },
+      "required": [
+        "categories",
+        "menuItems"
+      ],
+      "title": "Menu",
+      "type": "object"
+    },
+    "MenuEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "CUSTOM",
+          "default": "CUSTOM",
+          "type": "string"
+        },
+        "name": {
+          "const": "menu",
+          "default": "menu",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/Menu"
+        }
+      },
+      "required": [
+        "type",
+        "name",
+        "value"
+      ],
+      "title": "MenuEvent",
+      "type": "object"
+    },
+    "MenuItem": {
+      "additionalProperties": false,
+      "properties": {
+        "itemId": {
+          "type": "string"
+        },
+        "categoryId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "price": {
+          "description": "An amount in fils (100 fils = 1 AED).",
+          "type": "integer"
+        },
+        "imageUrl": {
+          "default": "",
+          "type": "string"
+        },
+        "category": {
+          "default": "",
+          "type": "string"
+        },
+        "featured": {
+          "default": false,
+          "type": "boolean"
+        },
+        "sortOrder": {
+          "default": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "itemId",
+        "categoryId",
+        "name",
+        "description",
+        "price",
+        "imageUrl",
+        "category",
+        "featured",
+        "sortOrder"
+      ],
+      "title": "MenuItem",
+      "type": "object"
+    },
+    "OrderItem": {
+      "additionalProperties": false,
+      "properties": {
+        "itemId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "quantity": {
+          "type": "integer"
+        },
+        "unitPrice": {
+          "description": "An amount in fils (100 fils = 1 AED).",
+          "type": "integer"
+        },
+        "specialInstructions": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "required": [
+        "itemId",
+        "name",
+        "quantity",
+        "unitPrice",
+        "specialInstructions"
+      ],
+      "title": "OrderItem",
+      "type": "object"
+    },
+    "ScreenState": {
+      "additionalProperties": false,
+      "description": "Everything the screen shows apart from the menu. Only the agent's tools change it.",
+      "properties": {
+        "highlightedCategory": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "highlightedItem": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "orderItems": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/OrderItem"
+          },
+          "type": "array"
+        },
+        "orderTotal": {
+          "default": 0,
+          "description": "An amount in fils (100 fils = 1 AED).",
+          "type": "integer"
+        },
+        "orderConfirmed": {
+          "default": false,
+          "type": "boolean"
+        },
+        "orderNumber": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "burgerBuilder": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BurgerBuilder"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "highlightedCategory",
+        "highlightedItem",
+        "orderItems",
+        "orderTotal",
+        "orderConfirmed",
+        "orderNumber",
+        "burgerBuilder"
+      ],
+      "title": "ScreenState",
+      "type": "object"
+    },
+    "SessionEnded": {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "enum": [
+            "order-complete",
+            "idle-timeout",
+            "conversation-ended",
+            "agent-error"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "title": "SessionEnded",
+      "type": "object"
+    },
+    "SessionEndedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "CUSTOM",
+          "default": "CUSTOM",
+          "type": "string"
+        },
+        "name": {
+          "const": "session_ended",
+          "default": "session_ended",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/SessionEnded"
+        }
+      },
+      "required": [
+        "type",
+        "name",
+        "value"
+      ],
+      "title": "SessionEndedEvent",
+      "type": "object"
+    },
+    "StateSnapshotEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "STATE_SNAPSHOT",
+          "default": "STATE_SNAPSHOT",
+          "type": "string"
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/ScreenState"
+        }
+      },
+      "required": [
+        "type",
+        "epoch",
+        "version",
+        "snapshot"
+      ],
+      "title": "StateSnapshotEvent",
+      "type": "object"
+    }
+  }
+}

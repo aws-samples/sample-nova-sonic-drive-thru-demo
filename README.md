@@ -16,7 +16,8 @@ A voice-powered drive-thru ordering app built with Amazon Nova Sonic, Strands Ag
 - **Voice only, server owns the screen** — customers only talk; the screen only displays. Each conversation's order and screen state live in a server-side session, and every tool that changes the screen sends the new state. The browser only ever sends microphone audio.
 - **Survives dropped connections** — the browser keeps one AgentCore session ID per order and reconnects with it after a drop, which reaches the same session: the order, the screen and the conversation carry on.
 - **No direct AWS calls from browser** — the frontend doesn't talk to DynamoDB or S3 directly. All data flows through the agent via WebSocket.
-- **JSON protocol** — all WebSocket communication is JSON (audio is base64-encoded). Screen messages are shaped like [AG-UI](https://docs.ag-ui.com) events: a `CUSTOM` `menu` event once per connection, a `STATE_SNAPSHOT` with an `epoch` and `version` after every change (the browser ignores out-of-date ones), and a `CUSTOM` `session_ended` event with the reason before the server closes a session.
+- **One typed protocol** — `agent/protocol.py` defines every WebSocket message once, as Pydantic models. Audio goes both ways as binary frames of raw 16 kHz mono 16-bit PCM, with no base64 or JSON around it. The server's other messages are JSON, shaped like [AG-UI](https://docs.ag-ui.com) events: a `CUSTOM` `menu` event once per connection, a `STATE_SNAPSHOT` with an `epoch` and `version` after every change (the browser ignores out-of-date ones), `bidi_interruption` to stop the agent's voice, and a `CUSTOM` `session_ended` event with the reason before the server closes a session. The browser's TypeScript types are generated from the models (see [Changing the protocol](#changing-the-protocol)).
+- **Gapless playback** — each chunk of the agent's voice is scheduled on the Web Audio clock to start exactly when the previous one ends.
 - **OAuth auth** — Cognito JWT token via `Sec-WebSocket-Protocol` header for WebSocket authentication.
 
 ## Prerequisites
@@ -149,6 +150,17 @@ cd frontend && npm ci && npm run build && npm test && cd ..
 pip install -r cdk/requirements.txt
 python -m pytest cdk/tests
 ```
+
+### Changing the protocol
+
+Edit the models in `agent/protocol.py`, then regenerate the schema and the browser's types:
+
+```bash
+python -m agent.protocol                     # writes frontend/src/protocol/protocol.schema.json
+cd frontend && npm run gen:protocol && cd .. # writes frontend/src/protocol/messages.ts
+```
+
+CI fails if either file is out of date.
 
 The CDK tests include regression checks for problems that only appear after deploying: an invalid Content-Security-Policy, the frontend deploy deleting the menu images, CloudFront serving missing files as the app page, open sign-up, and the agent's model drifting from its IAM grant.
 

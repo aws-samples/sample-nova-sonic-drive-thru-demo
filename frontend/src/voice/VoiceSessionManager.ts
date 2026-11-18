@@ -2,27 +2,35 @@
 // SPDX-License-Identifier: MIT-0
 
 /**
- * Voice session manager using Strands BidiAgent JSON protocol.
- * Audio is base64-encoded inside JSON events — no raw binary frames.
- * Handles mic capture, audio playback, interruptions, and UI_Events.
+ * Voice session manager: mic capture, playback of the agent's voice, interruptions, and the
+ * agent's screen messages.
+ *
+ * Audio goes both ways as binary WebSocket frames of raw AUDIO_FORMAT PCM; the agent's other
+ * messages are JSON (see ../protocol/messages.ts, generated from agent/protocol.py).
  */
 
-import type { AgentCoreWebSocketClient, BidiEvent } from './WebSocketClient';
+import type { AgentCoreWebSocketClient } from './WebSocketClient';
 import { useAppStore } from '../store/appStore';
-import type { MenuData, ScreenState } from '../types';
+import { AUDIO_FORMAT } from '../protocol/messages';
+import type { ServerMessage, SessionEnded } from '../protocol/messages';
 
-const SAMPLE_RATE = 16000; // Nova Sonic's input rate (the agent is configured for it)
+export type SessionEndReason = SessionEnded['reason'];
+
+const SAMPLE_RATE = AUDIO_FORMAT.sampleRate; // both ways; the agent configures Nova Sonic for it
 // 40 ms mic frames. Smaller frames reach the model sooner (the old ScriptProcessor sent 256 ms
 // at a time), at 25 messages a second; the agent rate-limits by bytes, so that's fine.
 export const FRAME_SAMPLES = 640;
 // While the agent is talking, frames quieter than this are taken for its own voice coming
 // back through the mic, and not sent.
 const ECHO_GATE_RMS = 0.015;
+// When the agent starts talking (or its audio ran dry), the first chunk starts this far in
+// the future, so the chunks after it arrive in time to play back-to-back.
+export const PLAYBACK_LEAD_SECONDS = 0.05;
 
 // Waits before each reconnect attempt after an unexpected drop; then the session is given up.
 const RECONNECT_DELAYS_MS = [250, 1000, 2000, 4000, 8000];
 
-const END_MESSAGES: Record<string, string> = {
+const END_MESSAGES: Record<SessionEndReason, string> = {
   'order-complete': 'Thank you for your order!',
   'idle-timeout': 'Your session ended after a period of silence. Start again whenever you are ready.',
   'conversation-ended': 'Thank you for visiting!',
@@ -35,17 +43,18 @@ export class VoiceSessionManager {
   private mediaStream: MediaStream | null = null;
   private captureContext: AudioContext | null = null;
   private playbackContext: AudioContext | null = null;
-  private audioQueue: AudioBuffer[] = [];
-  private isPlaying = false;
+  // Agent audio already handed to the audio clock, and when the last of it ends (in
+  // playbackContext time). Each chunk starts exactly where the previous one ends.
+  private scheduledSources = new Set<AudioBufferSourceNode>();
+  private nextStartTime = 0;
   private active = false;
   private reconnecting = false;
   // Reconnect attempts used since the conversation last worked. Only reset once the agent is
   // heard again, so a connection that opens and then fails straight away can't retry forever.
   private reconnectAttempts = 0;
-  private currentSource: AudioBufferSourceNode | null = null;
   private isSpeaking = false; // true while agent audio is playing
-  private endReason: string | null = null; // set when the agent says why it is ending the session
-  private onEnded: ((message: string, reason: string | null) => void) | null;
+  private endReason: SessionEndReason | null = null; // set when the agent says why it is ending the session
+  private onEnded: ((message: string, reason: SessionEndReason | null) => void) | null;
   // One agent session per order: kept across reconnects so the order survives a dropped connection
   private sessionId = '';
   private runtimeArn = '';
@@ -57,7 +66,7 @@ export class VoiceSessionManager {
    *   message, and the agent's reason ('order-complete', 'idle-timeout', 'conversation-ended')
    *   or null if the connection dropped and could not be restored.
    */
-  constructor(client: AgentCoreWebSocketClient, onEnded?: (message: string, reason: string | null) => void) {
+  constructor(client: AgentCoreWebSocketClient, onEnded?: (message: string, reason: SessionEndReason | null) => void) {
     this.client = client;
     this.onEnded = onEnded ?? null;
   }
@@ -79,7 +88,7 @@ export class VoiceSessionManager {
     // 1. Request microphone
     try {
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true },
+        audio: { channelCount: AUDIO_FORMAT.channels, sampleRate: SAMPLE_RATE, echoCancellation: true, noiseSuppression: true },
       });
     } catch (err: unknown) {
       useAppStore.getState().setMicPermission('denied');
@@ -88,8 +97,9 @@ export class VoiceSessionManager {
     useAppStore.getState().setMicPermission('granted');
 
     // 2. Register event handler BEFORE connecting so we don't miss the initial state
-    this.playbackContext = new AudioContext({ sampleRate: 16000 });
-    this.client.onEvent((event: BidiEvent) => this.handleEvent(event));
+    this.playbackContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+    this.client.onMessage((message) => this.handleMessage(message));
+    this.client.onAudio((pcm) => this.handleAudio(pcm));
 
     // When the agent ends the session (it says why first), release the mic and tell the user.
     // Any other close is a dropped connection: reconnect to the same session and carry on.
@@ -105,7 +115,7 @@ export class VoiceSessionManager {
     // 3. Connect WebSocket. The agent sends the menu and screen, then greets the customer.
     await this.client.connect(runtimeArn, region, await getToken(), this.sessionId);
 
-    // 4. Capture the mic on the audio thread in 40 ms frames → send as bidi_audio_input JSON events
+    // 4. Capture the mic on the audio thread in 40 ms frames → send each as a binary frame
     try {
       this.captureContext = new AudioContext({ sampleRate: SAMPLE_RATE });
       await this.captureContext.audioWorklet.addModule(`${import.meta.env.BASE_URL}audio-capture-worklet.js`);
@@ -130,22 +140,13 @@ export class VoiceSessionManager {
     useAppStore.getState().setListening(true);
   }
 
-  /** Send one captured mic frame (16-bit PCM) to the agent. */
+  /** Send one captured mic frame (16-bit PCM) to the agent, as is. */
   sendAudioFrame(pcm: ArrayBuffer, rms: number): void {
     if (!this.active) return;
     // Simple energy gate while the agent is talking: quiet speaker bleed-through would
     // otherwise interrupt it, but a customer who actually speaks up still can.
     if (this.isSpeaking && rms < ECHO_GATE_RMS) return;
-    const bytes = new Uint8Array(pcm);
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-    this.client.send({
-      type: 'bidi_audio_input',
-      audio: btoa(binary),
-      format: 'pcm',
-      sample_rate: SAMPLE_RATE,
-      channels: 1,
-    });
+    this.client.sendAudio(pcm);
   }
 
   /** Reconnect to the same agent session after an unexpected drop, keeping the microphone open. */
@@ -175,7 +176,7 @@ export class VoiceSessionManager {
     this.finish(DROPPED_MESSAGE, null);
   }
 
-  private finish(message: string, reason: string | null): void {
+  private finish(message: string, reason: SessionEndReason | null): void {
     this.endSession();
     this.onEnded?.(message, reason);
   }
@@ -194,8 +195,9 @@ export class VoiceSessionManager {
       this.playbackContext.close().catch(() => {});
       this.playbackContext = null;
     }
-    this.audioQueue = [];
-    this.isPlaying = false;
+    this.scheduledSources.clear();
+    this.nextStartTime = 0;
+    this.isSpeaking = false;
     this.client.disconnect();
     useAppStore.getState().endVoiceSession();
   }
@@ -204,106 +206,96 @@ export class VoiceSessionManager {
     return this.active;
   }
 
-  private handleEvent(event: BidiEvent): void {
-    switch (event.type) {
-      case 'bidi_audio_stream':
-        this.reconnectAttempts = 0; // the conversation is working again
-        this.isSpeaking = true;
-        this.queueAudio(event.audio as string, (event.sample_rate as number) || 16000);
-        break;
+  /** The agent's voice: one binary frame of AUDIO_FORMAT PCM. */
+  private handleAudio(pcm: ArrayBuffer): void {
+    this.reconnectAttempts = 0; // the conversation is working again
+    this.queueAudio(pcm);
+  }
 
+  private handleMessage(message: ServerMessage): void {
+    switch (message.type) {
       case 'bidi_interruption':
-        // Stop the currently playing audio immediately
+        // Stop the agent's voice immediately, including what is already scheduled
         this.stopPlayback();
-        break;
-
-      case 'bidi_transcript_stream':
         break;
 
       case 'STATE_SNAPSHOT': {
         // Everything on screen apart from the menu, sent whole after every change
-        const { epoch, version, snapshot } = event;
-        if (typeof epoch === 'string' && typeof version === 'number' && snapshot && typeof snapshot === 'object') {
-          if (!useAppStore.getState().applySnapshot(epoch, version, snapshot as ScreenState)) {
-            console.warn('[Voice] Ignored an out-of-date screen snapshot:', version);
-          }
+        const { epoch, version, snapshot } = message;
+        if (!useAppStore.getState().applySnapshot(epoch, version, snapshot)) {
+          console.warn('[Voice] Ignored an out-of-date screen snapshot:', version);
         }
         break;
       }
 
-      case 'CUSTOM': {
-        const value = event.value as Record<string, unknown> | undefined;
-        if (event.name === 'menu' && value) {
-          useAppStore.getState().applyMenu(value as unknown as MenuData);
-        } else if (event.name === 'session_ended') {
+      case 'CUSTOM':
+        if (message.name === 'menu') {
+          useAppStore.getState().applyMenu(message.value);
+        } else if (message.name === 'session_ended') {
           // Sent by the agent just before it closes the socket
-          this.endReason = typeof value?.reason === 'string' ? value.reason : null;
+          this.endReason = message.value.reason;
         }
         break;
-      }
 
       default:
-        break;
+        break; // a message type this build doesn't know
     }
   }
 
   private stopPlayback(): void {
+    for (const source of this.scheduledSources) {
+      source.onended = null;
+      try {
+        source.stop();
+      } catch {
+        // already stopped
+      }
+    }
+    this.scheduledSources.clear();
+    this.nextStartTime = 0;
     this.isSpeaking = false;
-    if (this.currentSource) {
-      this.currentSource.onended = null;
-      this.currentSource.stop();
-      this.currentSource = null;
-    }
-    this.audioQueue = [];
-    this.isPlaying = false;
-    if (this.playbackContext) {
-      this.playbackContext.close().catch(() => {});
-      this.playbackContext = new AudioContext({ sampleRate: 16000 });
-    }
   }
 
-  private queueAudio(base64Audio: string, sampleRate: number): void {
+  /**
+   * Schedule a chunk of the agent's voice to start exactly when the previous one ends, on the
+   * audio clock. (Starting each chunk from the previous one's `onended` left a gap between
+   * chunks: the event fires on the main thread, after the audio has already run out.)
+   */
+  private queueAudio(pcm: ArrayBuffer): void {
     if (!this.playbackContext || this.playbackContext.state === 'closed') {
-      this.playbackContext = new AudioContext({ sampleRate });
+      this.playbackContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+      this.nextStartTime = 0;
     }
+    const context = this.playbackContext;
 
     // Resume if browser suspended the AudioContext (e.g. tab backgrounded)
-    if (this.playbackContext.state === 'suspended') {
-      this.playbackContext.resume();
+    if (context.state === 'suspended') {
+      void context.resume();
     }
 
-    const binary = atob(base64Audio);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-
-    const pcm = new Int16Array(bytes.buffer);
-    const float32 = new Float32Array(pcm.length);
-    for (let i = 0; i < pcm.length; i++) {
-      float32[i] = pcm[i] / (pcm[i] < 0 ? 0x8000 : 0x7fff);
+    const samples = new Int16Array(pcm, 0, pcm.byteLength >> 1); // little-endian, as the agent sends it
+    if (samples.length === 0) return;
+    const float32 = new Float32Array(samples.length);
+    for (let i = 0; i < samples.length; i++) {
+      float32[i] = samples[i] / (samples[i] < 0 ? 0x8000 : 0x7fff);
     }
-
-    const buffer = this.playbackContext.createBuffer(1, float32.length, sampleRate);
+    const buffer = context.createBuffer(AUDIO_FORMAT.channels, float32.length, SAMPLE_RATE);
     buffer.getChannelData(0).set(float32);
-    this.audioQueue.push(buffer);
 
-    if (!this.isPlaying) this.playNext();
-  }
-
-  private playNext(): void {
-    if (this.audioQueue.length === 0 || !this.playbackContext || this.playbackContext.state === 'closed') {
-      this.isPlaying = false;
-      this.isSpeaking = false;
-      this.currentSource = null;
-      return;
-    }
-
-    this.isPlaying = true;
-    const buffer = this.audioQueue.shift()!;
-    const source = this.playbackContext.createBufferSource();
+    const source = context.createBufferSource();
     source.buffer = buffer;
-    source.connect(this.playbackContext.destination);
-    source.onended = () => this.playNext();
-    this.currentSource = source;
-    source.start();
+    source.connect(context.destination);
+    // Back-to-back with what is still to play; if it has all played, a short lead from now
+    const startAt = this.nextStartTime > context.currentTime
+      ? this.nextStartTime
+      : context.currentTime + PLAYBACK_LEAD_SECONDS;
+    source.onended = () => {
+      this.scheduledSources.delete(source);
+      if (this.scheduledSources.size === 0) this.isSpeaking = false;
+    };
+    source.start(startAt);
+    this.nextStartTime = startAt + buffer.duration;
+    this.scheduledSources.add(source);
+    this.isSpeaking = true;
   }
 }

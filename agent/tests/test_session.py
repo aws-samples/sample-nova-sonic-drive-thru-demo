@@ -29,29 +29,43 @@ class FakeWebSocket:
         await asyncio.sleep(0)  # give other senders a chance to interleave, if they could
         self.sent.append(json.loads(text))
 
+    async def send_bytes(self, data):
+        await asyncio.sleep(0)
+        self.sent.append(data)
+
 
 class TestScreenState:
     def test_every_change_gets_a_new_version(self):
         session = make_session(MENU)
-        assert session.snapshot_event()["version"] == 0
+        assert session.snapshot_event().version == 0
         session.update_screen(highlightedCategory="drinks")
         session.update_screen(highlightedItem="cola")
-        snapshot = session.snapshot_event()
+        snapshot = session.snapshot_event().model_dump()
         assert snapshot["type"] == "STATE_SNAPSHOT"
         assert snapshot["epoch"] == session.epoch
         assert snapshot["version"] == 2
         assert snapshot["snapshot"]["highlightedItem"] == "cola"
 
     def test_only_screen_fields_can_be_set(self):
+        session = make_session(MENU)
         with pytest.raises(ValueError):
-            make_session(MENU).update_screen(categories=[])  # the menu is sent separately
+            session.update_screen(categories=[])  # the menu is sent separately
+        assert session.version == 0
+
+    def test_a_screen_that_does_not_fit_the_protocol_is_rejected_and_nothing_changes(self):
+        session = make_session(MENU)
+        with pytest.raises(ValueError):
+            session.update_screen(highlightedItem="cola", orderItems=[{"itemId": "cola", "quantity": 1}])
+        assert session.version == 0
+        assert session.screen["highlightedItem"] is None
 
     def test_snapshot_is_a_copy(self):
         session = make_session(MENU)
-        session.update_screen(orderItems=[{"itemId": "cola", "quantity": 1}])
+        line = {"itemId": "cola", "name": "Cola", "quantity": 1, "unitPrice": 900, "specialInstructions": ""}
+        session.update_screen(orderItems=[line])
         snapshot = session.snapshot_event()
-        snapshot["snapshot"]["orderItems"].append("tampered")
-        assert session.screen["orderItems"] == [{"itemId": "cola", "quantity": 1}]
+        snapshot.snapshot.orderItems.clear()
+        assert session.screen["orderItems"] == [line]
 
     def test_a_new_session_has_a_new_epoch(self):
         assert make_session(MENU).epoch != make_session(MENU).epoch
@@ -86,20 +100,20 @@ class TestSending:
             old, new = FakeWebSocket(), FakeWebSocket()
             session.attach(old, asyncio.get_running_loop())
             assert session.attach(new, asyncio.get_running_loop()) is old
-            await session.send({"type": "bidi_audio_stream"}, websocket=old)  # the old agent, shutting down
-            await session.send({"type": "bidi_audio_stream"}, websocket=new)
+            await session.send_audio(b"old", websocket=old)  # the old agent, shutting down
+            await session.send_audio(b"new", websocket=new)
             session.detach(old)  # the old connection's cleanup must not detach the new one
             assert session.is_attached(new)
             return old.sent, new.sent
 
         old_sent, new_sent = asyncio.run(scenario())
         assert old_sent == []
-        assert new_sent == [{"type": "bidi_audio_stream"}]
+        assert new_sent == [b"new"]
 
     def test_updates_without_a_connection_are_kept_for_the_next_one(self):
         session = make_session(MENU)
         session.update_screen(highlightedItem="cola")  # e.g. while the browser is reconnecting
-        assert session.snapshot_event()["snapshot"]["highlightedItem"] == "cola"
+        assert session.snapshot_event().snapshot.highlightedItem == "cola"
 
 
 class TestSessionRegistry:

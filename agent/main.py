@@ -5,10 +5,12 @@
 
 The customer only talks; the screen only displays. The server owns everything the screen
 shows: it sends the menu when the browser connects, and each tool that changes the screen
-sends the new screen state (see session.py for the messages).
+sends the new screen state. protocol.py defines the messages: audio both ways as binary
+frames, everything else as JSON text frames from the server.
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -30,10 +32,10 @@ logging.basicConfig(
 
 # --- Rate limiting (per connection) ---
 # Limit what the browser sends by bytes, not message count, so frame size is the client's
-# choice: 16 kHz 16-bit mono audio is 32 KB/s, about 43 KB/s once base64'd into JSON, whether
-# it arrives as 40 ms frames (25 a second) or 256 ms ones. Twice that leaves room for jitter;
+# choice: 16 kHz 16-bit mono audio is 32,000 bytes a second of binary frames, whether it
+# arrives as 40 ms frames (25 a second) or 256 ms ones. Twice that leaves room for jitter;
 # the bursts absorb a stalled network flushing its backlog at once.
-RATE_LIMIT_BYTES_PER_SECOND = 88 * 1024
+RATE_LIMIT_BYTES_PER_SECOND = 64 * 1024
 RATE_LIMIT_BURST_BYTES = 4 * RATE_LIMIT_BYTES_PER_SECOND
 # And by count, so a flood of tiny messages can't get through on bytes alone.
 RATE_LIMIT_MESSAGES_PER_SECOND = 100
@@ -93,9 +95,8 @@ REPLACED_CLOSE_CODE = 4001
 # (Audio *input* frames don't count — silence arrives continuously too.)
 _ACTIVITY_EVENT_TYPES = {"bidi_transcript_stream", "bidi_audio_stream", "tool_use_stream"}
 
-# The screen is voice-only, so the browser only ever sends microphone audio. Anything else
-# (e.g. typed text) is dropped.
-_ACCEPTED_INPUT_TYPES = {"bidi_audio_input"}
+# The screen is voice-only, so the browser only ever sends microphone audio, as binary frames.
+# Text frames (e.g. typed text) are dropped.
 
 # The conversation opens with one of these, sent by the server as if the customer said it,
 # so the agent speaks first. It is not shown or spoken to the customer.
@@ -107,13 +108,14 @@ def is_retryable_model_error(error: BaseException) -> bool:
     return type(error).__name__ in RETRYABLE_MODEL_ERRORS
 
 try:
-    from agent import session as sessions
+    from agent import protocol, session as sessions
     from agent.menu_tools import get_recommendations, load_menu_data, show_category, show_item
     from agent.order_tools import (
         add_to_order, cancel_custom_burger, cancel_order, confirm_custom_burger, get_order_summary, place_order,
         remove_from_order, update_custom_burger,
     )
 except ModuleNotFoundError:
+    import protocol
     import session as sessions
     from menu_tools import get_recommendations, load_menu_data, show_category, show_item
     from order_tools import (
@@ -205,14 +207,31 @@ def _new_model() -> BidiNovaSonicModel:
     overlaps the old connection's shutdown, stopping the old model would end the new stream.
     Nova 2 Sonic: Nova Sonic v1 (amazon.nova-sonic-v1:0) has reached end of life in Bedrock.
     """
+    audio = protocol.AUDIO_FORMAT  # what the browser sends and plays
     return BidiNovaSonicModel(
         model_id="amazon.nova-2-sonic-v1:0",
         provider_config={
-            "audio": {"voice": "tiffany", "input_rate": 16000, "output_rate": 16000, "channels": 1, "format": "pcm"},
+            "audio": {"voice": "tiffany", "input_rate": audio.sampleRate, "output_rate": audio.sampleRate,
+                      "channels": audio.channels, "format": "pcm"},
             "inference": {},
         },
         client_config={"region": BEDROCK_REGION},
     )
+
+
+def audio_input_event(pcm: bytes) -> dict:
+    """A binary frame from the browser, as the BidiAgent input event that carries it."""
+    return {
+        "type": "bidi_audio_input",
+        "audio": base64.b64encode(pcm).decode("ascii"),
+        "format": "pcm",
+        "sample_rate": protocol.AUDIO_FORMAT.sampleRate,
+        "channels": protocol.AUDIO_FORMAT.channels,
+    }
+
+
+def session_ended(reason: str) -> protocol.SessionEndedEvent:
+    return protocol.SessionEndedEvent(value=protocol.SessionEnded(reason=reason))
 
 
 app = FastAPI()
@@ -293,33 +312,45 @@ async def voice_chat(websocket: WebSocket) -> None:
             if opening:
                 return opening.pop()
             while True:
-                text = await websocket.receive_text()
-                size = len(text.encode("utf-8"))
-                # Checked before parsing, so oversized or excess messages cost nothing more
-                if size > MAX_WS_MESSAGE_BYTES:
-                    note_dropped(f"oversized ({size} bytes)")
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    raise WebSocketDisconnect(message.get("code", 1000), message.get("reason"))
+                pcm = message.get("bytes")
+                if pcm is None:
+                    note_dropped("text frame (the voice-only client only sends binary audio)")
                     continue
-                if not (message_budget.take(1) and byte_budget.take(size)):
+                # Checked before anything else, so oversized or excess frames cost nothing more
+                if len(pcm) > MAX_WS_MESSAGE_BYTES:
+                    note_dropped(f"oversized ({len(pcm)} bytes)")
+                    continue
+                if not (message_budget.take(1) and byte_budget.take(len(pcm))):
                     note_dropped("rate limit")
                     continue
-                try:
-                    data = json.loads(text)
-                except ValueError:
-                    note_dropped("not JSON")
+                if not pcm or len(pcm) % protocol.AUDIO_BYTES_PER_SAMPLE:
+                    note_dropped(f"not whole 16-bit samples ({len(pcm)} bytes)")
                     continue
-                if not isinstance(data, dict) or data.get("type") not in _ACCEPTED_INPUT_TYPES:
-                    note_dropped(f"type {data.get('type') if isinstance(data, dict) else type(data).__name__!r} "
-                                 "(the voice-only client only sends audio)")
-                    continue
-                return data
+                return audio_input_event(pcm)
 
         async def send_output(event):
+            """Pass the agent's output on to the browser: its voice, and interruptions.
+
+            Everything else BidiAgent emits (transcripts, tool use, usage) stays on the server;
+            the browser only gets what protocol.py defines.
+            """
             nonlocal heard_since_restart
-            if isinstance(event, dict) and event.get("type") in _ACTIVITY_EVENT_TYPES:
+            if not isinstance(event, dict):
+                return
+            if event.get("type") in _ACTIVITY_EVENT_TYPES:
                 session.mark_activity()
-                if event["type"] == "bidi_audio_stream":
-                    heard_since_restart = True
-            await session.send(event, websocket=websocket)
+            if event.get("type") == "bidi_audio_stream":
+                heard_since_restart = True
+                if event.get("sample_rate", protocol.AUDIO_FORMAT.sampleRate) != protocol.AUDIO_FORMAT.sampleRate:
+                    note_dropped(f"agent audio at {event.get('sample_rate')} Hz, not the protocol's rate")
+                    return
+                await session.send_audio(base64.b64decode(event["audio"]), websocket=websocket)
+            elif event.get("type") == "bidi_interruption":
+                reason = str(event.get("reason") or "user_speech")
+                await session.send(protocol.InterruptionEvent(reason=reason), websocket=websocket)
 
         async def idle_watchdog() -> str | None:
             """Return the reason to end the session once it has gone quiet for long enough.
@@ -374,7 +405,7 @@ async def voice_chat(websocket: WebSocket) -> None:
                            restarts + 1, MAX_MODEL_RESTARTS, session_id, type(error).__name__, error)
             # (run() has already stopped the failed agent and its model stream)
             # The reply that was playing won't continue; stop it in the browser
-            await session.send({"type": "bidi_interruption", "reason": "model_restart"}, websocket=websocket)
+            await session.send(protocol.InterruptionEvent(reason="model_restart"), websocket=websocket)
             await asyncio.sleep(MODEL_RESTART_DELAYS_SECONDS[min(restarts, len(MODEL_RESTART_DELAYS_SECONDS) - 1)])
             restarts += 1
             heard_since_restart = False
@@ -382,8 +413,7 @@ async def voice_chat(websocket: WebSocket) -> None:
             agent = start_agent(RECONNECT_CUE)
 
         # Tell the browser why, in-band: proxies don't reliably forward custom close codes.
-        await session.send({"type": "CUSTOM", "name": "session_ended", "value": {"reason": end_reason}},
-                           websocket=websocket)
+        await session.send(session_ended(end_reason), websocket=websocket)
         await websocket.close(code=IDLE_CLOSE_CODE if end_reason == IDLE_CLOSE_REASON else 1000, reason=end_reason)
     except WebSocketDisconnect:
         # Keep the session: the browser reconnects with the same session ID after a drop
@@ -393,8 +423,7 @@ async def voice_chat(websocket: WebSocket) -> None:
         if session is not None and session.is_attached(websocket):
             end_reason = AGENT_ERROR_REASON
             try:
-                await session.send({"type": "CUSTOM", "name": "session_ended", "value": {"reason": end_reason}},
-                                   websocket=websocket)
+                await session.send(session_ended(end_reason), websocket=websocket)
                 await websocket.close(code=AGENT_ERROR_CLOSE_CODE, reason=end_reason)
             except Exception:
                 pass  # the socket is already gone

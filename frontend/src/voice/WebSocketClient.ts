@@ -3,15 +3,15 @@
 
 /**
  * WebSocket client for AgentCore using OAuth via Sec-WebSocket-Protocol.
- * All communication is JSON — audio is base64-encoded inside typed events.
+ *
+ * The protocol (agent/protocol.py, generated into ../protocol/messages.ts): audio goes both
+ * ways as binary frames of raw AUDIO_FORMAT PCM; the server's other messages are JSON text
+ * frames, one ServerMessage each. The browser sends nothing but audio.
  */
 
-export type WebSocketState = 'connecting' | 'connected' | 'disconnected';
+import type { ServerMessage } from '../protocol/messages';
 
-export interface BidiEvent {
-  type: string;
-  [key: string]: unknown;
-}
+export type WebSocketState = 'connecting' | 'connected' | 'disconnected';
 
 export interface AgentCoreWebSocketClient {
   /**
@@ -21,8 +21,12 @@ export interface AgentCoreWebSocketClient {
    */
   connect(runtimeArn: string, region: string, jwtToken: string, sessionId: string): Promise<void>;
   disconnect(): void;
-  send(event: BidiEvent): void;
-  onEvent(callback: (event: BidiEvent) => void): void;
+  /** Send one frame of microphone audio (AUDIO_FORMAT PCM), as a binary frame. */
+  sendAudio(pcm: ArrayBuffer): void;
+  /** Called for each JSON message from the server. */
+  onMessage(callback: (message: ServerMessage) => void): void;
+  /** Called for each binary frame from the server: the agent's voice, as AUDIO_FORMAT PCM. */
+  onAudio(callback: (pcm: ArrayBuffer) => void): void;
   onDisconnect(callback: () => void): void;
   getState(): WebSocketState;
 }
@@ -30,7 +34,8 @@ export interface AgentCoreWebSocketClient {
 export function createWebSocketClient(): AgentCoreWebSocketClient {
   let ws: WebSocket | null = null;
   let state: WebSocketState = 'disconnected';
-  const eventCallbacks: Array<(event: BidiEvent) => void> = [];
+  const messageCallbacks: Array<(message: ServerMessage) => void> = [];
+  const audioCallbacks: Array<(pcm: ArrayBuffer) => void> = [];
   const disconnectCallbacks: Array<() => void> = [];
 
   return {
@@ -54,6 +59,7 @@ export function createWebSocketClient(): AgentCoreWebSocketClient {
 
       return new Promise<void>((resolve, reject) => {
         const socket = new WebSocket(url, protocols);
+        socket.binaryType = 'arraybuffer'; // audio frames arrive as ArrayBuffers, not Blobs
         ws = socket;
         // Events from a socket this client has since replaced or dropped are ignored.
         const current = () => ws === socket;
@@ -80,12 +86,19 @@ export function createWebSocketClient(): AgentCoreWebSocketClient {
           for (const cb of disconnectCallbacks) cb();
         };
 
-        socket.onmessage = (msg) => {
+        socket.onmessage = (msg: MessageEvent<string | ArrayBuffer>) => {
           if (!current()) return;
+          if (msg.data instanceof ArrayBuffer) {
+            for (const cb of audioCallbacks) cb(msg.data);
+            return;
+          }
+          let message: ServerMessage;
           try {
-            const event = JSON.parse(msg.data) as BidiEvent;
-            for (const cb of eventCallbacks) cb(event);
-          } catch { /* ignore non-JSON */ }
+            message = JSON.parse(msg.data) as ServerMessage;
+          } catch {
+            return; // not JSON
+          }
+          for (const cb of messageCallbacks) cb(message);
         };
       });
     },
@@ -97,16 +110,20 @@ export function createWebSocketClient(): AgentCoreWebSocketClient {
       socket?.close();
     },
 
-    send(event) {
+    sendAudio(pcm) {
       // readyState, not our own state: it turns CLOSING as soon as the server starts closing,
       // before onclose runs, and sending then only logs browser errors.
       if (ws && state === 'connected' && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(event));
+        ws.send(pcm);
       }
     },
 
-    onEvent(callback) {
-      eventCallbacks.push(callback);
+    onMessage(callback) {
+      messageCallbacks.push(callback);
+    },
+
+    onAudio(callback) {
+      audioCallbacks.push(callback);
     },
 
     onDisconnect(callback) {

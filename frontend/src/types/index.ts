@@ -1,60 +1,21 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 
-// Menu data types
+// The menu and screen types come from the protocol, which is defined once in agent/protocol.py
+// and generated into ../protocol/messages.ts. Prices are integers in fils (1/100 AED).
+import type { BurgerBuilder, Menu, ScreenState } from '../protocol/messages';
 
-export interface Category {
-  categoryId: string;
-  name: string;
-  sortOrder: number;
-}
+export type { Category, MenuItem, OrderItem, ScreenState } from '../protocol/messages';
 
-export interface MenuItem {
-  itemId: string;
-  categoryId: string;
-  name: string;
-  description: string;
-  price: number; // fils (1/100 AED)
-  imageUrl: string;
-  category: string;
-  featured: boolean;
-  sortOrder: number;
-}
-
-export interface OrderItem {
-  itemId: string;
-  name: string;
-  quantity: number;
-  unitPrice: number; // fils (1/100 AED)
-  specialInstructions?: string;
-}
-
-// Agent-controlled UI state — sent as a complete snapshot via update_ui tool
-export interface BurgerBuilderState {
-  active: boolean;
-  patty: string | null;
-  toppings: string[];
-  sauces: string[];
-  price: number; // fils — running total
-}
-
-export interface AgentUIState {
-  categories: Category[];
-  menuItems: Record<string, MenuItem[]>; // categoryId -> items
-  highlightedCategory: string | null;
-  highlightedItem: string | null;
-  orderItems: OrderItem[];
-  orderTotal: number;
-  orderConfirmed: boolean;
-  orderNumber: string | null;
-  burgerBuilder: BurgerBuilderState | null;
-}
+// The build-your-own burger in progress, as the agent shows it
+export type BurgerBuilderState = BurgerBuilder;
 
 // The menu: sent by the agent once per connection (CUSTOM "menu" event)
-export type MenuData = Pick<AgentUIState, 'categories' | 'menuItems'>;
+export type MenuData = Menu;
 
-// Everything else on screen: sent whole after every change (STATE_SNAPSHOT event)
-export type ScreenState = Omit<AgentUIState, 'categories' | 'menuItems'>;
+// Everything the agent shows: the menu, and the screen state it sends whole after every
+// change (STATE_SNAPSHOT event)
+export type AgentUIState = MenuData & ScreenState;
 
 // Full application state
 export interface AppState {

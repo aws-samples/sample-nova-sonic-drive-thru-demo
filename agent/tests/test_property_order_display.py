@@ -18,7 +18,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from moto import mock_aws
 
-from agent import order_tools
+from agent import order_tools, protocol
 from agent.tests.support import context, make_session
 
 CATEGORY = "cat"
@@ -81,7 +81,8 @@ def _start_example(menu_table, menu, session_id="prop-session"):
 def _assert_screen_matches(session, expected_quantities, prices):
     ui = session.screen
     summary = session.order.get_summary()
-    assert ui["orderItems"] == summary["items"]
+    # The screen always carries every protocol field (e.g. specialInstructions="" when there are none)
+    assert ui["orderItems"] == [protocol.OrderItem.model_validate(i).model_dump() for i in summary["items"]]
     assert {i["itemId"]: i["quantity"] for i in ui["orderItems"]} == expected_quantities
     assert ui["orderTotal"] == sum(qty * prices[item_id] for item_id, qty in expected_quantities.items())
 

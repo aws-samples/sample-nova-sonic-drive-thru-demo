@@ -3,17 +3,12 @@
 
 """The incoming rate limit must pass real microphone audio at any frame size, and stop floods."""
 
-import base64
-import json
-
 from agent import main
 
 
 def audio_message(ms: int) -> int:
-    """Size in bytes of one bidi_audio_input message carrying `ms` of 16 kHz 16-bit mono audio."""
-    pcm = bytes(16 * 2 * ms)
-    return len(json.dumps({"type": "bidi_audio_input", "audio": base64.b64encode(pcm).decode(),
-                           "format": "pcm", "sample_rate": 16000, "channels": 1}))
+    """Size in bytes of one binary frame carrying `ms` of 16 kHz 16-bit mono audio."""
+    return 16 * 2 * ms
 
 
 class FakeClock:
