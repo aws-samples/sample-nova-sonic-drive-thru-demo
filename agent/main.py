@@ -208,11 +208,12 @@ def _new_model() -> BidiNovaSonicModel:
 
     The model object holds its stream, so connections must not share one: when a reconnect
     overlaps the old connection's shutdown, stopping the old model would end the new stream.
-    Nova 2 Sonic: Nova Sonic v1 (amazon.nova-sonic-v1:0) has reached end of life in Bedrock.
+    Nova 2.5 Sonic follows instructions and calls tools more accurately than Nova 2 Sonic, with
+    lower latency and shorter replies. (Nova Sonic v1 has reached end of life in Bedrock.)
     """
     audio = protocol.AUDIO_FORMAT  # what the browser sends and plays
     return BidiNovaSonicModel(
-        model_id="amazon.nova-2-sonic-v1:0",
+        model_id="amazon.nova-2-5-sonic",
         provider_config={
             "audio": {"voice": "tiffany", "input_rate": audio.sampleRate, "output_rate": audio.sampleRate,
                       "channels": audio.channels, "format": "pcm"},

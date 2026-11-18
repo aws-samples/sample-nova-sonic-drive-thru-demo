@@ -27,7 +27,7 @@ A voice-powered drive-thru ordering app built with Amazon Nova Sonic, Strands Ag
 - Docker (for building the agent container)
 - AWS CLI configured with credentials
 - AWS CDK CLI (`npm install -g aws-cdk`)
-- Amazon Bedrock Nova Sonic access in us-east-1
+- Amazon Bedrock access to Nova 2.5 Sonic (`amazon.nova-2-5-sonic`) in us-west-2, where the agent calls it (change with `-c bedrockRegion=<region>`)
 
 ## Project Structure
 

@@ -27,6 +27,7 @@ from constructs import Construct
 # The region the agent calls Nova Sonic in. It can differ from the stack's region: everything
 # else (site, sign-in, runtime, tables) stays where the stack is. Nova 2 Sonic in us-east-1
 # failed every new stream on Sep 29, 2026 while us-west-2 worked, so the model runs there.
+# (Nova 2.5 Sonic, used since Nov 2026, is available on demand in both.)
 # Override with `cdk deploy -c bedrockRegion=<region>`.
 DEFAULT_BEDROCK_REGION = "us-west-2"
 
@@ -359,7 +360,7 @@ class BackendStack(Stack):
             effect=iam.Effect.ALLOW,
             actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
             resources=[
-                f"arn:aws:bedrock:{bedrock_region}::foundation-model/amazon.nova-2-sonic-v1:0",
+                f"arn:aws:bedrock:{bedrock_region}::foundation-model/amazon.nova-2-5-sonic",
             ],
         ))
         self.orders_table.grant_read_write_data(self.agent_runtime)
