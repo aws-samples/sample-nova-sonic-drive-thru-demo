@@ -6,3 +6,4 @@ tests/
 test_*.py
 requirements-dev.txt
 .venv
+evals/

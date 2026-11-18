@@ -151,6 +151,17 @@ pip install -r cdk/requirements.txt
 python -m pytest cdk/tests
 ```
 
+### Behaviour tests against the real model
+
+The tests above replace the model with a fake, so they can't tell when a change to the system prompt, the tools or the model breaks ordering. `agent/evals` runs scripted conversations against the real Nova Sonic, with the real tools and prompt, and checks what the agent did: what ended up on the order, which tools it called, and whether it placed the order. The menu comes from `data/menu_items.json`, held in memory, so the only AWS call is to Bedrock.
+
+```bash
+python -m agent.evals              # every scenario, about 2 minutes
+python -m agent.evals -k burger    # only scenarios whose name contains "burger"
+```
+
+It needs credentials that can call Nova Sonic in `BEDROCK_REGION` (default `us-west-2`). Each scenario is a short paid session, so CI doesn't run it; run it after changing the prompt, the tools or the model. The model's replies vary, so re-run a scenario that fails once before reading too much into it.
+
 ### Changing the protocol
 
 Edit the models in `agent/protocol.py`, then regenerate the schema and the browser's types:
